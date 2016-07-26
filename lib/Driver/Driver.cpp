@@ -842,14 +842,14 @@ static bool isSDKTooOld(StringRef sdkPath, clang::VersionTuple minVersion,
 /// the given target.
 static bool isSDKTooOld(StringRef sdkPath, const llvm::Triple &target) {
   if (target.isMacOSX()) {
-    return isSDKTooOld(sdkPath, clang::VersionTuple(10, 11), "OSX");
+    return isSDKTooOld(sdkPath, clang::VersionTuple(10, 12), "OSX");
 
   } else if (target.isiOS()) {
     // Includes both iOS and TVOS.
-    return isSDKTooOld(sdkPath, clang::VersionTuple(9, 0), "Simulator", "OS");
+    return isSDKTooOld(sdkPath, clang::VersionTuple(10, 0), "Simulator", "OS");
 
-  } else if(target.isWatchOS()) {
-    return isSDKTooOld(sdkPath, clang::VersionTuple(2, 0), "Simulator", "OS");
+  } else if (target.isWatchOS()) {
+    return isSDKTooOld(sdkPath, clang::VersionTuple(3, 0), "Simulator", "OS");
 
   } else {
     return false;
@@ -975,6 +975,8 @@ void Driver::buildOutputInfo(const ToolChain &TC, const DerivedArgList &Args,
       OI.DebugInfoKind = IRGenDebugInfoKind::Normal;
     else if (A->getOption().matches(options::OPT_gline_tables_only))
       OI.DebugInfoKind = IRGenDebugInfoKind::LineTables;
+    else if (A->getOption().matches(options::OPT_gdwarf_types))
+      OI.DebugInfoKind = IRGenDebugInfoKind::DwarfTypes;
     else
       assert(A->getOption().matches(options::OPT_gnone) &&
              "unknown -g<kind> option");
@@ -985,7 +987,7 @@ void Driver::buildOutputInfo(const ToolChain &TC, const DerivedArgList &Args,
     // top-level output.
     OI.ShouldGenerateModule = true;
     OI.ShouldTreatModuleAsTopLevelOutput = true;
-  } else if ((OI.DebugInfoKind == IRGenDebugInfoKind::Normal &&
+  } else if ((OI.DebugInfoKind > IRGenDebugInfoKind::LineTables &&
               OI.shouldLink()) ||
              Args.hasArg(options::OPT_emit_objc_header,
                          options::OPT_emit_objc_header_path)) {
@@ -1104,6 +1106,11 @@ void Driver::buildOutputInfo(const ToolChain &TC, const DerivedArgList &Args,
   OI.SelectedSanitizer = SanitizerKind::None;
   if (const Arg *A = Args.getLastArg(options::OPT_sanitize_EQ))
     OI.SelectedSanitizer = parseSanitizerArgValues(A, TC.getTriple(), Diags);
+
+  // Check that the sanitizer coverage flags are supported if supplied.
+  if (const Arg *A = Args.getLastArg(options::OPT_sanitize_coverage_EQ))
+    (void)parseSanitizerCoverageArgValue(A, TC.getTriple(), Diags,
+                                         OI.SelectedSanitizer);
 }
 
 void Driver::buildActions(const ToolChain &TC,
@@ -2031,11 +2038,17 @@ const ToolChain *Driver::getToolChain(const ArgList &Args) const {
       TC = new toolchains::Darwin(*this, Target);
       break;
     case llvm::Triple::Linux:
+      if (Target.isAndroid()) {
+        TC = new toolchains::Android(*this, Target);
+      } else {
+        TC = new toolchains::GenericUnix(*this, Target);
+      }
+      break;
     case llvm::Triple::FreeBSD:
       TC = new toolchains::GenericUnix(*this, Target);
       break;
     case llvm::Triple::Win32:
-      TC = new toolchains::Windows(*this, Target);
+      TC = new toolchains::Cygwin(*this, Target);
       break;
     default:
       TC = nullptr;

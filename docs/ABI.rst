@@ -259,9 +259,9 @@ enum in declaration order.
 Existential Container Layout
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Values of protocol type, protocol composition type, or "any" type
-(``protocol<>``) are laid out using **existential containers** (so-called
-because these types are "existential types" in type theory). 
+Values of protocol type, protocol composition type, or ``Any`` type are laid
+out using **existential containers** (so-called because these types are
+"existential types" in type theory).
 
 Opaque Existential Containers
 `````````````````````````````
@@ -346,8 +346,7 @@ All metadata records share a common header, with the following fields:
   * `Tuple metadata`_ has a kind of **9**.
   * `Function metadata`_ has a kind of **10**.
   * `Protocol metadata`_ has a kind of **12**. This is used for
-    protocol types, for protocol compositions, and for the "any" type
-    ``protocol<>``.
+    protocol types, for protocol compositions, and for the ``Any`` type.
   * `Metatype metadata`_ has a kind of **13**.
   * `Class metadata`_, instead of a kind, has an *isa pointer* in its kind slot,
     pointing to the class's metaclass record. This isa pointer is guaranteed
@@ -462,9 +461,9 @@ contain the following fields:
   `protocol descriptor`_ records, but are pre-calculated for convenience.
 
 - The **number of protocols** that make up the protocol composition is stored at
-  **offset 2**. For the "any" types ``protocol<>`` or ``protocol<class>``, this
+  **offset 2**. For the "any" types ``Any`` or ``Any : class``, this
   is zero. For a single-protocol type ``P``, this is one. For a protocol
-  composition type ``protocol<P, Q, ...>``, this is the number of protocols.
+  composition type ``P & Q & ...``, this is the number of protocols.
 
 - The **protocol descriptor vector** begins at **offset 3**. This is an inline
   array of pointers to the `protocol descriptor`_ for every protocol in the
@@ -564,7 +563,7 @@ for ``T``, ``U``, and ``V`` in succession, as if laid out in a C struct::
   };
 
 If we add protocol requirements to the parameters, for example,
-``<T: Runcible, U: protocol<Fungible, Ansible>, V>``, then the type's generic
+``<T: Runcible, U: Fungible & Ansible, V>``, then the type's generic
 parameter vector contains witness tables for those protocols, as if laid out::
 
   struct GenericParameterVector {
@@ -782,6 +781,11 @@ Globals
   global ::= 'TV' global                 // vtable override thunk
   global ::= 'TW' protocol-conformance entity
                                          // protocol witness thunk
+  global ::= 'TB' identifier context identifier
+                                         // property behavior initializer thunk
+  global ::= 'Tb' identifier context identifier
+                                         // property behavior setter thunk
+
   entity ::= nominal-type                // named type declaration
   entity ::= static? entity-kind context entity-name
   entity-kind ::= 'F'                    // function (ctor, accessor, etc.)
@@ -907,8 +911,8 @@ Types
   type ::= 'BB'                              // Builtin.UnsafeValueBuffer
   type ::= 'Bf' natural '_'                  // Builtin.Float<n>
   type ::= 'Bi' natural '_'                  // Builtin.Int<n>
-  type ::= 'BO'                              // Builtin.ObjCPointer
-  type ::= 'Bo'                              // Builtin.ObjectPointer
+  type ::= 'BO'                              // Builtin.UnknownObject
+  type ::= 'Bo'                              // Builtin.NativeObject
   type ::= 'Bp'                              // Builtin.RawPointer
   type ::= 'Bv' natural type                 // Builtin.Vec<n>x<type>
   type ::= 'Bw'                              // Builtin.Word
@@ -935,6 +939,7 @@ Types
   type ::= 'Xw' type                         // @weak type
   type ::= 'XF' impl-function-type           // function implementation type
   type ::= 'Xf' type type                    // @thin function type
+  type ::= 'Xb' type                         // SIL @box type
   nominal-type ::= known-nominal-type
   nominal-type ::= substitution
   nominal-type ::= nominal-type-kind declaration-name
@@ -1013,8 +1018,8 @@ mangled in to disambiguate.
   impl-function-attribute ::= 'Cm'            // compatible with Swift method
   impl-function-attribute ::= 'CO'            // compatible with ObjC method
   impl-function-attribute ::= 'Cw'            // compatible with protocol witness
-  impl-function-attribute ::= 'N'             // noreturn
   impl-function-attribute ::= 'G'             // generic
+  impl-function-attribute ::= 'g'             // pseudogeneric
   impl-parameter ::= impl-convention type
   impl-result ::= impl-convention type
 
@@ -1023,8 +1028,9 @@ types.  However, in some cases it is more useful to encode the exact
 implementation details of a function type.
 
 Any ``<impl-function-attribute>`` productions must appear in the order
-in which they are specified above: e.g. a noreturn C function is
-mangled with ``CcN``.
+in which they are specified above: e.g. a pseudogeneric C function is
+mangled with ``Ccg``.  ``g`` and ``G`` are exclusive and mark the presence
+of a generic signature immediately following.
 
 Note that the convention and function-attribute productions do not
 need to be disambiguated from the start of a ``<type>``.
@@ -1177,7 +1183,7 @@ associated substitution index. Otherwise, the entity is mangled normally, and
 it is then added to the substitution map and associated with the next
 available substitution index.
 
-For example,  in mangling a function type
+For example, in mangling a function type
 ``(zim.zang.zung, zim.zang.zung, zim.zippity) -> zim.zang.zoo`` (with module
 ``zim`` and class ``zim.zang``),
 the recurring contexts ``zim``, ``zim.zang``, and ``zim.zang.zung``
@@ -1214,6 +1220,8 @@ Predefined Substitutions
   known-nominal-type ::= 'Sd'                // Swift.Float64
   known-nominal-type ::= 'Sf'                // Swift.Float32
   known-nominal-type ::= 'Si'                // Swift.Int
+  known-nominal-type ::= 'SV'                // Swift.UnsafeRawPointer
+  known-nominal-type ::= 'Sv'                // Swift.UnsafeMutableRawPointer
   known-nominal-type ::= 'SP'                // Swift.UnsafePointer
   known-nominal-type ::= 'Sp'                // Swift.UnsafeMutablePointer
   known-nominal-type ::= 'SQ'                // Swift.ImplicitlyUnwrappedOptional

@@ -6,41 +6,49 @@
   "String": [
     "CString.swift",
     "Character.swift",
-    "StringCharacterView.swift",
+    "StaticString.swift",
     "String.swift",
     "StringBridge.swift",
     "StringBuffer.swift",
+    "StringCharacterView.swift",
     "StringCore.swift",
+    "StringIndexConversions.swift",
     "StringInterpolation.swift",
     "StringLegacy.swift",
-    "StringUnicodeScalarView.swift",
+    "StringRangeReplaceableCollection.swift",
     "StringUTF16.swift",
     "StringUTF8.swift",
+    "StringUnicodeScalarView.swift",
     "Unicode.swift",
     "UnicodeScalar.swift",
     "UnicodeTrie.swift",
-    "StaticString.swift",
     "UnavailableStringAPIs.swift"
   ],
   "Bool": [
-    "Bool.swift",
-    "Boolean.swift"
+    "Bool.swift"
   ],
   "Collection": [
     "Collection.swift",
+    "BidirectionalCollection.swift",
+    "RandomAccessCollection.swift",
+    "MutableCollection.swift",
     "CollectionAlgorithms.swift",
     "EmptyCollection.swift",
     "Stride.swift",
     "Repeat.swift",
     "Sort.swift",
     "Range.swift",
+    "ClosedRange.swift",
     "CollectionOfOne.swift",
     "HeapBuffer.swift",
     "Sequence.swift",
     "SequenceAlgorithms.swift",
     "RangeReplaceableCollection.swift",
     "Index.swift",
+    "Indices.swift",
     "Existential.swift",
+    "WriteBackMutableSlice.swift",
+    "UnfoldSequence.swift",
     {
       "Type-erased": [
         "ExistentialCollection.swift"
@@ -91,13 +99,14 @@
     "BuiltinMath.swift",
     {
     "Integers": [
+      "Integers.swift",
       "IntegerArithmetic.swift",
       "FixedPoint.swift",
       "IntegerParsing.swift"],
     "Floating": [
       "FloatingPoint.swift",
-      "FloatingPointOperations.swift",
-      "FloatingPointParsing.swift"]}
+      "FloatingPointParsing.swift",
+      "FloatingPointTypes.swift"]}
   ],
   "Optional": [
     "ImplicitlyUnwrappedOptional.swift",
@@ -106,6 +115,7 @@
   "Pointer": [
     "Pointer.swift",
     "UnsafePointer.swift",
+    "UnsafeRawPointer.swift",
     "UnsafeBufferPointer.swift"
   ],
   "Protocols": [
@@ -129,7 +139,13 @@
     "Shims.swift",
     "Unmanaged.swift",
     "Availability.swift",
-    "Process.swift",
-    "Tuple.swift"
+    "CommandLine.swift",
+    "Tuple.swift",
+    "NewtypeWrapper.swift",
+    "UnsafeBitMap.swift",
+    "DebuggerSupport.swift",
+    "Equatable.swift",
+    "Comparable.swift",
+    "Hashable.swift"
   ]
 }

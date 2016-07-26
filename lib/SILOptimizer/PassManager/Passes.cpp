@@ -124,6 +124,7 @@ bool swift::runSILDiagnosticPasses(SILModule &Module) {
 
 void AddSimplifyCFGSILCombine(SILPassManager &PM) {
   PM.addSimplifyCFG();
+  PM.addConditionForwarding();
   // Jump threading can expose opportunity for silcombine (enum -> is_enum_tag->
   // cond_br).
   PM.addSILCombine();
@@ -219,34 +220,39 @@ void AddSSAPasses(SILPassManager &PM, OptimizationLevelKind OpLevel) {
   // Promote stack allocations to values and eliminate redundant
   // loads.
   PM.addMem2Reg();
-  PM.addRedundantLoadElimination();
+  PM.addPerformanceConstantPropagation();
   //  Do a round of CFG simplification, followed by peepholes, then
   //  more CFG simplification.
-  AddSimplifyCFGSILCombine(PM);
 
-  PM.addPerformanceConstantPropagation();
-  PM.addDCE();
-  PM.addCSE();
-  PM.addSILCombine();
-  PM.addJumpThreadSimplifyCFG();
-  // Jump threading can expose opportunity for silcombine (enum -> is_enum_tag->
+  // Jump threading can expose opportunity for SILCombine (enum -> is_enum_tag->
   // cond_br).
+  PM.addJumpThreadSimplifyCFG();
   PM.addSILCombine();
-  // Which can expose opportunity for simplifcfg.
+  // SILCombine can expose further opportunities for SimplifyCFG.
   PM.addSimplifyCFG();
+
+  PM.addCSE();
+  PM.addRedundantLoadElimination();
 
   // Perform retain/release code motion and run the first ARC optimizer.
   PM.addCSE();
+  PM.addDCE();
+
   PM.addEarlyCodeMotion();
+  PM.addReleaseHoisting();
   PM.addARCSequenceOpts();
 
   PM.addSimplifyCFG();
-  // Only hoist releases very late.
-  if (OpLevel == OptimizationLevelKind::LowLevel)
+  if (OpLevel == OptimizationLevelKind::LowLevel) {
+    // Remove retain/releases based on Builtin.unsafeGuaranteed
+    PM.addUnsafeGuaranteedPeephole();
+    // Only hoist releases very late.
     PM.addLateCodeMotion();
-  else
+  } else
     PM.addEarlyCodeMotion();
 
+  PM.addRetainSinking();
+  PM.addReleaseHoisting();
   PM.addARCSequenceOpts();
   PM.addRemovePins();
 }
@@ -256,6 +262,9 @@ void swift::runSILOptimizationPasses(SILModule &Module) {
   // Verify the module, if required.
   if (Module.getOptions().VerifyAll)
     Module.verify();
+
+  if (Module.getOptions().DisableSILPerfOptimizations)
+    return;
 
   if (Module.getOptions().DebugSerialization) {
     SILPassManager PM(&Module);
@@ -328,6 +337,11 @@ void swift::runSILOptimizationPasses(SILModule &Module) {
   // Speculate virtual call targets.
   PM.addSpeculativeDevirtualization();
 
+  // There should be at least one SILCombine+SimplifyCFG between the
+  // ClosureSpecializer, etc. and the last inliner. Cleaning up after these
+  // passes can expose more inlining opportunities.
+  AddSimplifyCFGSILCombine(PM);
+
   // We do this late since it is a pass like the inline caches that we only want
   // to run once very late. Make sure to run at least one round of the ARC
   // optimizer after this.
@@ -340,11 +354,6 @@ void swift::runSILOptimizationPasses(SILModule &Module) {
 
   PM.setStageName("LowLevel");
 
-  // Rewrite to get the benefit of release devirtualizer.
-  // Also, Make sure the run the rewriter to create the optimized functions before
-  // the cloner on the current function is run !.
-  PM.addFunctionSignatureOptRewriter();
-
   // Should be after FunctionSignatureOpts and before the last inliner.
   PM.addReleaseDevirtualizer();
 
@@ -352,7 +361,7 @@ void swift::runSILOptimizationPasses(SILModule &Module) {
   PM.addDeadStoreElimination();
 
   // We've done a lot of optimizations on this function, attempt to FSO.
-  PM.addFunctionSignatureOptCloner();
+  PM.addFunctionSignatureOpts();
 
   PM.runOneIteration();
   PM.resetAndRemoveTransformations();
@@ -374,6 +383,11 @@ void swift::runSILOptimizationPasses(SILModule &Module) {
   // Remove dead code.
   PM.addDCE();
   PM.addSimplifyCFG();
+
+  // Try to hoist all releases, including epilogue releases. This should be
+  // after FSO.
+  PM.addLateReleaseHoisting();
+
   PM.runOneIteration();
 
   PM.resetAndRemoveTransformations();
@@ -523,6 +537,9 @@ PMDescriptor::PMDescriptor(llvm::yaml::SequenceNode *Desc) {
 void swift::runSILOptimizationPassesWithFileSpecification(SILModule &Module,
                                                           StringRef FileName) {
 #ifndef NDEBUG
+  if (Module.getOptions().DisableSILPerfOptimizations)
+    return;
+
   llvm::SmallVector<PMDescriptor, 4> Descriptors;
   PMDescriptor::descriptorsForFile(FileName, Descriptors);
 

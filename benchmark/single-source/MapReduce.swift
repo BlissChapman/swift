@@ -14,13 +14,13 @@ import TestsUtils
 import Foundation
 
 @inline(never)
-public func run_MapReduce(N: Int) {
+public func run_MapReduce(_ N: Int) {
   var numbers = [Int](0..<1000)
 
   var c = 0
   for _ in 1...N*100 {
     numbers = numbers.map({$0 &+ 5})
-    c += numbers.reduce(0, combine: &+)
+    c += numbers.reduce(0, &+)
   }
   CheckResults(c != 0, "IncorrectResults in MapReduce")
 }

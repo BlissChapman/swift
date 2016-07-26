@@ -18,7 +18,7 @@ import has_accessibility
 // This deliberately has the wrong import kind.
 import var has_accessibility.zz // expected-error {{no such decl in module}}
 
-func markUsed<T>(t: T) {}
+func markUsed<T>(_ t: T) {}
 
 markUsed(has_accessibility.x)
 markUsed(has_accessibility.y) // expected-error {{module 'has_accessibility' has no member named 'y'}}
@@ -129,8 +129,8 @@ private class PrivateBox<T> { // expected-note 2 {{type declared here}}
   typealias AlwaysFloat = Float
 }
 
-let boxUnboxInt: PrivateBox<Int>.ValueType = 0 // expected-error {{constant must be declared private because its type uses a private type}}
-let boxFloat: PrivateBox<Int>.AlwaysFloat = 0 // expected-error {{constant must be declared private because its type uses a private type}}
+let boxUnboxInt: PrivateBox<Int>.ValueType = 0 // expected-error {{constant must be declared fileprivate because its type uses a fileprivate type}}
+let boxFloat: PrivateBox<Int>.AlwaysFloat = 0 // expected-error {{constant must be declared fileprivate because its type uses a fileprivate type}}
 #endif
 
 

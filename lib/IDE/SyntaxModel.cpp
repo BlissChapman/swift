@@ -84,13 +84,11 @@ SyntaxModelContext::SyntaxModelContext(SourceFile &SrcFile)
       Length = Tok.getLength();
 
       if (LiteralStartLoc.hasValue() && Length.hasValue()) {
-        // We are still inside an object literal until we hit a r_square_lit.
-        if (Tok.getKind() != tok::r_square_lit) {
+        if (Tok.getKind() != tok::r_paren)
           continue;
-        }
         Kind = SyntaxNodeKind::ObjectLiteral;
         Nodes.emplace_back(Kind, CharSourceRange(SM, LiteralStartLoc.getValue(),
-          Tok.getRange().getEnd()));
+                                                 Tok.getRange().getEnd()));
         LiteralStartLoc = Optional<SourceLoc>();
         continue;
       }
@@ -99,19 +97,19 @@ SyntaxModelContext::SyntaxModelContext(SourceFile &SrcFile)
 #define KEYWORD(X) case tok::kw_##X: Kind = SyntaxNodeKind::Keyword; break;
 #include "swift/Parse/Tokens.def"
 #undef KEYWORD
-      case tok::pound_selector:
-      case tok::pound_file:
-      case tok::pound_column:
-      case tok::pound_function:
-      case tok::pound_dsohandle:
+
+#define POUND_OLD_OBJECT_LITERAL(Name, NewName, OldArg, NewArg) \
+      case tok::pound_##Name:
+#define POUND_OBJECT_LITERAL(Name, Desc, Proto) case tok::pound_##Name:
+#include "swift/Parse/Tokens.def"
+        LiteralStartLoc = Loc;
+        continue;
+
+#define POUND_OBJECT_LITERAL(Name, Desc, Proto)
+#define POUND_OLD_OBJECT_LITERAL(Name, NewName, OldArg, NewArg)
+#define POUND_KEYWORD(Name) case tok::pound_##Name:
+#include "swift/Parse/Tokens.def"
         Kind = SyntaxNodeKind::Keyword;
-        break;
-      case tok::pound_line:
-        Kind = Tok.isAtStartOfLine() ? SyntaxNodeKind::BuildConfigKeyword :
-                                       SyntaxNodeKind::Keyword;
-        break;
-      case tok::pound_available:
-        Kind = SyntaxNodeKind::BuildConfigKeyword;
         break;
       case tok::identifier:
         if (Tok.getText().startswith("<#"))
@@ -189,11 +187,6 @@ SyntaxModelContext::SyntaxModelContext(SourceFile &SrcFile)
         break;
       }
 
-      case tok::l_square_lit: {
-        LiteralStartLoc = Loc;
-        continue;
-      }
-
       default:
         continue;
       }
@@ -252,7 +245,7 @@ static const char *const RegexStrURL =
 #define MARKUP_SIMPLE_FIELD(Id, Keyword, XMLKind) \
   #Keyword "|"
 static const char *const RegexStrDocCommentField =
-  "^[ ]?- ("
+  "^[ ]*- ("
 #include "swift/Markup/SimpleFields.def"
   "returns):";
 
@@ -452,12 +445,18 @@ std::pair<bool, Expr *> ModelASTWalker::walkToExprPre(Expr *E) {
     if (isCurrentCallArgExpr(ParentTupleExpr)) {
       CharSourceRange NR = parameterNameRangeOfCallArg(ParentTupleExpr, E);
       SyntaxStructureNode SN;
-      SN.Kind = SyntaxStructureKind::Parameter;
+      SN.Kind = SyntaxStructureKind::Argument;
       SN.NameRange = NR;
       SN.BodyRange = charSourceRangeFromSourceRange(SM, E->getSourceRange());
-      if (NR.isValid())
+      if (NR.isValid()) {
         SN.Range = charSourceRangeFromSourceRange(SM, SourceRange(NR.getStart(),
                                                                   E->getEndLoc()));
+        passTokenNodesUntil(NR.getStart(),
+                            PassNodesBehavior::ExcludeNodeAtLocation);
+        if (!TokenNodes.empty())
+          const_cast<SyntaxNode&>(TokenNodes.front()).Kind = SyntaxNodeKind::
+            Identifier;
+      }
       else
         SN.Range = SN.BodyRange;
 
@@ -490,11 +489,13 @@ std::pair<bool, Expr *> ModelASTWalker::walkToExprPre(Expr *E) {
   } else if (auto *ObjectE = dyn_cast<ObjectLiteralExpr>(E)) {
     SyntaxStructureNode SN;
     SN.Kind = SyntaxStructureKind::ObjectLiteralExpression;
-    SN.Range = charSourceRangeFromSourceRange(SM, E->getSourceRange());
-    SourceLoc NRStart = ObjectE->getNameLoc();
-    SourceLoc NREnd = NRStart.getAdvancedLoc(ObjectE->getName().getLength());
+    SN.Range = charSourceRangeFromSourceRange(SM, ObjectE->getSourceRange());
+    SourceLoc NRStart = ObjectE->getSourceLoc().getAdvancedLoc(1);    
+    SourceLoc NREnd =
+      NRStart.getAdvancedLoc(ObjectE->getLiteralKindRawName().size());
     SN.NameRange = CharSourceRange(SM, NRStart, NREnd);
-    SN.BodyRange = innerCharSourceRangeFromSourceRange(SM, E->getSourceRange());
+    SN.BodyRange =
+      innerCharSourceRangeFromSourceRange(SM, ObjectE->getSourceRange());
     pushStructureNode(SN, E);
 
   } else if (auto *ArrayE = dyn_cast<ArrayExpr>(E)) {
@@ -520,6 +521,17 @@ std::pair<bool, Expr *> ModelASTWalker::walkToExprPre(Expr *E) {
     }
     SN.BodyRange = innerCharSourceRangeFromSourceRange(SM, E->getSourceRange());
     pushStructureNode(SN, E);
+  } else if (auto *Tup = dyn_cast<TupleExpr>(E)) {
+    for (unsigned I = 0; I < Tup->getNumElements(); ++ I) {
+      SourceLoc NameLoc = Tup->getElementNameLoc(I);
+      if (NameLoc.isValid()) {
+        passTokenNodesUntil(NameLoc, PassNodesBehavior::ExcludeNodeAtLocation);
+        if (!TokenNodes.empty()) {
+          const_cast<SyntaxNode&>(TokenNodes.front()).Kind = SyntaxNodeKind::
+            Identifier;
+        }
+      }
+    }
   }
 
   return { true, E };
@@ -537,12 +549,13 @@ void ModelASTWalker::handleStmtCondition(StmtCondition cond) {
   for (const auto &elt : cond) {
     if (elt.getKind() != StmtConditionElement::CK_Availability) continue;
 
-    SmallVector<CharSourceRange, 5> PlatformRanges;
-    elt.getAvailability()->getPlatformKeywordRanges(PlatformRanges);
-    std::for_each(PlatformRanges.begin(), PlatformRanges.end(),
-                  [&](CharSourceRange &Range) {
-                    passNonTokenNode({SyntaxNodeKind::Keyword, Range});
-                  });
+    SmallVector<SourceLoc, 5> PlatformLocs;
+    elt.getAvailability()->getPlatformKeywordLocs(PlatformLocs);
+    std::for_each(PlatformLocs.begin(), PlatformLocs.end(),
+                  [&](SourceLoc loc) {
+      auto range = charSourceRangeFromSourceRange(SM, loc);
+      passNonTokenNode({SyntaxNodeKind::Keyword, range});
+    });
   }
 }
 
@@ -707,7 +720,7 @@ std::pair<bool, Stmt *> ModelASTWalker::walkToStmtPre(Stmt *S) {
       if (Clause.Cond && !annotateIfConfigConditionIdentifiers(Clause.Cond))
         return { false, nullptr };
 
-      for(auto &Element : Clause.Elements) {
+      for (auto &Element : Clause.Elements) {
         if (Expr *E = Element.dyn_cast<Expr*>()) {
           E->walk(*this);
         } else if (Stmt *S = Element.dyn_cast<Stmt*>()) {

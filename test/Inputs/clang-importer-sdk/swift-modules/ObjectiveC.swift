@@ -1,16 +1,15 @@
 @_exported import ObjectiveC // Clang module
 
-// The iOS/arm64 target uses _Bool for Objective C's BOOL.  We include
+// The iOS/arm64 target uses _Bool for Objective-C's BOOL.  We include
 // x86_64 here as well because the iOS simulator also uses _Bool.
 #if ((os(iOS) || os(tvOS)) && (arch(arm64) || arch(x86_64))) || os(watchOS)
-public struct ObjCBool : Boolean {
+public struct ObjCBool {
   private var value : Bool
 
   public init(_ value: Bool) {
     self.value = value
   }
 
-  /// \brief Allow use in a Boolean context.
   public var boolValue: Bool {
     return value
   }
@@ -18,7 +17,7 @@ public struct ObjCBool : Boolean {
 
 #else
 
-public struct ObjCBool : Boolean {
+public struct ObjCBool {
   private var value : UInt8
 
   public init(_ value: Bool) {
@@ -29,7 +28,6 @@ public struct ObjCBool : Boolean {
     self.value = value
   }
 
-  /// \brief Allow use in a Boolean context.
   public var boolValue: Bool {
     if value == 0 { return false }
     return true
@@ -37,13 +35,13 @@ public struct ObjCBool : Boolean {
 }
 #endif
 
-extension ObjCBool : BooleanLiteralConvertible {
+extension ObjCBool : ExpressibleByBooleanLiteral {
   public init(booleanLiteral: Bool) {
     self.init(booleanLiteral)
   }
 }
 
-public struct Selector : StringLiteralConvertible {
+public struct Selector : ExpressibleByStringLiteral {
   private var ptr : OpaquePointer
 
   public init(_ value: String) {
@@ -63,21 +61,22 @@ public struct Selector : StringLiteralConvertible {
   }
 }
 
-public struct NSZone: NilLiteralConvertible {
-  public var pointer : OpaquePointer
+extension Selector : Equatable {}
 
-  @_transparent public
-  init(nilLiteral: ()) {
-    pointer = nil
-  }
+public func ==(lhs: Selector, rhs: Selector) -> Bool {
+  return sel_isEqual(lhs, rhs)
 }
 
-internal func _convertBoolToObjCBool(x: Bool) -> ObjCBool {
+public struct NSZone {
+  public var pointer : OpaquePointer
+}
+
+internal func _convertBoolToObjCBool(_ x: Bool) -> ObjCBool {
   return ObjCBool(x)
 }
 
-internal func _convertObjCBoolToBool(x: ObjCBool) -> Bool {
-  return Bool(x)
+internal func _convertObjCBoolToBool(_ x: ObjCBool) -> Bool {
+  return x.boolValue
 }
 
 public func ~=(x: NSObject, y: NSObject) -> Bool {

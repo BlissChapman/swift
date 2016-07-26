@@ -44,6 +44,9 @@
 #include "swift/Runtime/Config.h"
 #include "swift/Runtime/Metadata.h"
 #include "swift/Runtime/HeapObject.h"
+#if SWIFT_OBJC_INTEROP
+#include "swift/Runtime/ObjCBridge.h"
+#endif
 #include <cstring>
 #include <type_traits>
 
@@ -373,20 +376,17 @@ struct SwiftWeakRetainableBox :
 };
 
 #if SWIFT_OBJC_INTEROP
-extern "C" void *objc_retain(void *obj);
-extern "C" void objc_release(void *obj);
-
 /// A box implementation class for Objective-C object pointers.
 struct ObjCRetainableBox : RetainableBoxBase<ObjCRetainableBox, void*> {
   static constexpr unsigned numExtraInhabitants =
     swift_getHeapObjectExtraInhabitantCount();
 
   static void *retain(void *obj) {
-    return objc_retain(obj);
+    return objc_retain((id)obj);
   }
 
   static void release(void *obj) {
-    objc_release(obj);
+    objc_release((id)obj);
   }
 };
 
@@ -516,6 +516,22 @@ struct PointerPointerBox : NativeBox<void**> {
 
   static int getExtraInhabitantIndex(void ** const *src) {
     return swift_getHeapObjectExtraInhabitantIndex((HeapObject* const *) src);
+  }
+};
+
+/// A box implementation class for raw pointers.
+///
+/// Note that this is used for imported `void * _Nonnull`, which may include
+/// reinterpret_cast-ed integers, so we only get NULL as an extra inhabitant.
+struct RawPointerBox : NativeBox<void*> {
+  static constexpr unsigned numExtraInhabitants = 1;
+
+  static void storeExtraInhabitant(void **dest, int index) {
+    *dest = nullptr;
+  }
+
+  static int getExtraInhabitantIndex(void* const *src) {
+    return *src == nullptr ? 0 : -1;
   }
 };
 

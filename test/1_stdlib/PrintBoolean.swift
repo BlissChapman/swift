@@ -3,31 +3,25 @@
 
 import StdlibUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 let PrintTests = TestSuite("PrintBoolean")
 
 PrintTests.test("CustomStringConvertible") {
-  func hasDescription(any: Any) {
+  func hasDescription(_ any: Any) {
     expectTrue(any is CustomStringConvertible)
   }
 
-  hasDescription(Bool(true))
-  hasDescription(CBool(true))
+  hasDescription(true as Bool)
+  hasDescription(true as CBool)
 }
 
 PrintTests.test("Printable") {
-  expectPrinted("true", CBool(true))
-  expectPrinted("false", CBool(false))
-  
-  expectPrinted("true", Bool(true))
-  expectPrinted("false", Bool(false))
-  
+  expectPrinted("true", true as CBool)
+  expectPrinted("false", false as CBool)
+
+  expectPrinted("true", true as Bool)
+  expectPrinted("false", false as Bool)
+
   expectPrinted("true", true)
   expectPrinted("false", false)
 }

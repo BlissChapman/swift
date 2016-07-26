@@ -62,6 +62,8 @@
 // RUN: %target-swift-ide-test -code-completion -source-filename %s -code-completion-token=IN_FOR_EACH_3 | FileCheck %s -check-prefix=IN_FOR_EACH_3
 // RUN: %target-swift-ide-test -code-completion -source-filename %s -code-completion-token=IN_FOR_EACH_4 | FileCheck %s -check-prefix=IN_FOR_EACH_3
 
+// RUN: %target-swift-ide-test -code-completion -source-filename %s -code-completion-token=DEPRECATED_1 | FileCheck %s -check-prefix=DEPRECATED_1
+
 //
 // Test code completion at the beginning of expr-postfix.
 //
@@ -164,7 +166,7 @@ func testExprPostfixBeginIgnored3(fooParam: FooStruct) {
 
 //===--- Test that we include function parameters in completion results.
 
-func testFindFuncParam1(fooParam: FooStruct, a: Int, b: Float, c: inout Double)(d: inout Double) {
+func testFindFuncParam1(fooParam: FooStruct, a: Int, b: Float, c: inout Double, d: inout Double) {
   #^FIND_FUNC_PARAM_1^#
 // FIND_FUNC_PARAM_1: Begin completions
 // FIND_FUNC_PARAM_1-DAG: Decl[LocalVar]/Local: a[#Int#]{{; name=.+$}}
@@ -183,7 +185,7 @@ func testFindFuncParam2<Foo : FooProtocol>(fooParam: FooStruct, foo: Foo) {
 }
 
 struct TestFindFuncParam3_4 {
-  func testFindFuncParam3(a: Int, b: Float)(c: Double) {
+  func testFindFuncParam3(a: Int, b: Float, c: Double) {
     #^FIND_FUNC_PARAM_3^#
 // FIND_FUNC_PARAM_3: Begin completions
 // FIND_FUNC_PARAM_3-DAG: Decl[LocalVar]/Local: self[#TestFindFuncParam3_4#]{{; name=.+$}}
@@ -229,7 +231,7 @@ struct TestFindFuncParam5_6<T> {
 }
 
 class TestFindFuncParam7 {
-  func testFindFuncParam7(a: Int, b: Float)(c: Double) {
+  func testFindFuncParam7(a: Int, b: Float, c: Double) {
     #^FIND_FUNC_PARAM_7^#
 // FIND_FUNC_PARAM_7: Begin completions
 // FIND_FUNC_PARAM_7-DAG: Decl[LocalVar]/Local: self[#TestFindFuncParam7#]{{; name=.+$}}
@@ -455,3 +457,20 @@ func testInForEach4(arg: Int) {
   }
   let after = 4
 }
+
+@available(*, deprecated)
+struct Deprecated {
+  @available(*, deprecated)
+  func testDeprecated() {
+    @available(*, deprecated) let local = 1
+    @available(*, deprecated) func f() {}
+
+    #^DEPRECATED_1^#
+  }
+}
+// DEPRECATED_1: Begin completions
+// DEPRECATED_1-DAG: Decl[LocalVar]/Local/NotRecommended: local[#Int#];
+// DEPRECATED_1-DAG: Decl[FreeFunction]/Local/NotRecommended: f()[#Void#];
+// DEPRECATED_1-DAG: Decl[InstanceMethod]/CurrNominal/NotRecommended: testDeprecated()[#Void#];
+// DEPRECATED_1-DAG: Decl[Struct]/CurrModule/NotRecommended: Deprecated[#Deprecated#];
+// DEPRECATED_1: End completions

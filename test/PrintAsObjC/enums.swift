@@ -5,7 +5,7 @@
 // RUN: FileCheck %s < %t/enums.h
 // RUN: FileCheck -check-prefix=NEGATIVE %s < %t/enums.h
 // RUN: %check-in-clang %t/enums.h
-// RUN: %check-in-clang -fno-modules %t/enums.h -include Foundation.h -include ctypes.h -include CoreFoundation.h
+// RUN: %check-in-clang -fno-modules -Qunused-arguments %t/enums.h -include Foundation.h -include ctypes.h -include CoreFoundation.h
 
 // REQUIRES: objc_interop
 
@@ -23,11 +23,11 @@ import Foundation
 // CHECK-NEXT: - (enum ObjcEnumNamed)takeAndReturnRenamedEnum:(enum ObjcEnumNamed)foo;
 // CHECK: @end
 @objc class AnEnumMethod {
-  @objc func takeAndReturnEnum(foo: FooComments) -> NegativeValues {
+  @objc func takeAndReturnEnum(_ foo: FooComments) -> NegativeValues {
     return .Zung
   }
-  @objc func acceptPlainEnum(_: NSMalformedEnumMissingTypedef) {}
-  @objc func takeAndReturnRenamedEnum(foo: EnumNamed) -> EnumNamed {
+  @objc func acceptPlainEnum(_: MalformedEnumMissingTypedef) {}
+  @objc func takeAndReturnRenamedEnum(_ foo: EnumNamed) -> EnumNamed {
     return .A
   }
 }
@@ -69,9 +69,14 @@ import Foundation
   func methodNotExportedToObjC() {}
 }
 
-// CHECK-LABEL: /// Foo: A feer, a female feer.
+// CHECK: /**
+// CHECK-NEXT: Foo: A feer, a female feer.
+// CHECK-NEXT: */
+
 // CHECK-NEXT: typedef SWIFT_ENUM(NSInteger, FooComments) {
-// CHECK:   /// Zim: A zeer, a female zeer.
+// CHECK: /**
+// CHECK-NEXT: Zim: A zeer, a female zeer.
+// CHECK: */
 // CHECK-NEXT:   FooCommentsZim = 0,
 // CHECK-NEXT:   FooCommentsZang = 1,
 // CHECK-NEXT:   FooCommentsZung = 2,
@@ -94,21 +99,21 @@ import Foundation
   func methodNotExportedToObjC() {}
 }
 
-// CHECK-LABEL: typedef SWIFT_ENUM(NSInteger, SomeErrorProtocol) {
-// CHECK-NEXT:   SomeErrorProtocolBadness = 9001,
-// CHECK-NEXT:   SomeErrorProtocolWorseness = 9002,
+// CHECK-LABEL: typedef SWIFT_ENUM(NSInteger, SomeError) {
+// CHECK-NEXT:   SomeErrorBadness = 9001,
+// CHECK-NEXT:   SomeErrorWorseness = 9002,
 // CHECK-NEXT: };
-// CHECK-NEXT: static NSString * _Nonnull const SomeErrorProtocolDomain = @"enums.SomeErrorProtocol";
-@objc enum SomeErrorProtocol: Int, ErrorProtocol {
+// CHECK-NEXT: static NSString * _Nonnull const SomeErrorDomain = @"enums.SomeError";
+@objc enum SomeError: Int, Error {
   case Badness = 9001
   case Worseness
 }
 
-// CHECK-LABEL: typedef SWIFT_ENUM(NSInteger, SomeOtherErrorProtocol) {
-// CHECK-NEXT:   SomeOtherErrorProtocolDomain = 0,
+// CHECK-LABEL: typedef SWIFT_ENUM(NSInteger, SomeOtherError) {
+// CHECK-NEXT:   SomeOtherErrorDomain = 0,
 // CHECK-NEXT: };
-// NEGATIVE-NOT: NSString * _Nonnull const SomeOtherErrorProtocolDomain
-@objc enum SomeOtherErrorProtocol: Int, ErrorProtocol {
+// NEGATIVE-NOT: NSString * _Nonnull const SomeOtherErrorDomain
+@objc enum SomeOtherError: Int, Error {
   case Domain // collision!
 }
 
@@ -116,7 +121,7 @@ import Foundation
 // CHECK-NEXT:   ObjcErrorTypeBadStuff = 0,
 // CHECK-NEXT: };
 // CHECK-NEXT: static NSString * _Nonnull const ObjcErrorTypeDomain = @"enums.SomeRenamedErrorType";
-@objc(ObjcErrorType) enum SomeRenamedErrorType: Int, ErrorProtocol {
+@objc(ObjcErrorType) enum SomeRenamedErrorType: Int, Error {
   case BadStuff
 }
 
@@ -125,7 +130,7 @@ import Foundation
 // CHECK-NEXT: - (enum NegativeValues)takeAndReturnEnum:(enum FooComments)foo;
 // CHECK: @end
 @objc class ZEnumMethod {
-  @objc func takeAndReturnEnum(foo: FooComments) -> NegativeValues {
+  @objc func takeAndReturnEnum(_ foo: FooComments) -> NegativeValues {
     return .Zung
   }
 }

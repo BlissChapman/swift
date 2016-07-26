@@ -43,7 +43,7 @@ const unsigned char MODULE_DOC_SIGNATURE[] = { 0xE2, 0x9C, 0xA8, 0x07 };
 
 /// Serialized module format major version number.
 ///
-/// Always 0 for Swift 1.x and 2.x.
+/// Always 0 for Swift 1.x - 3.x.
 const uint16_t VERSION_MAJOR = 0;
 
 /// Serialized module format minor version number.
@@ -53,7 +53,7 @@ const uint16_t VERSION_MAJOR = 0;
 /// in source control, you should also update the comment to briefly
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
-const uint16_t VERSION_MINOR = 246; // Last change: @_specialize attribute
+const uint16_t VERSION_MINOR = 257; // Last change: private/fileprivate
 
 using DeclID = PointerEmbeddedInt<unsigned, 31>;
 using DeclIDField = BCFixed<31>;
@@ -287,6 +287,7 @@ using LibraryKindField = BCFixed<1>;
 // VERSION_MAJOR.
 enum class AccessibilityKind : uint8_t {
   Private = 0,
+  FilePrivate,
   Internal,
   Public,
 };
@@ -415,6 +416,7 @@ namespace control_block {
     METADATA, // ID
     BCFixed<16>, // Module format major version
     BCFixed<16>, // Module format minor version
+    BCVBR<8>, // length of "short version string" in the blob
     BCBlob // misc. version information
   >;
 
@@ -441,7 +443,7 @@ namespace options_block {
     XCC,
     IS_SIB,
     IS_TESTABLE,
-    IS_RESILIENT
+    RESILIENCE_STRATEGY
   };
 
   using SDKPathLayout = BCRecordLayout<
@@ -463,8 +465,9 @@ namespace options_block {
     IS_TESTABLE
   >;
 
-  using IsResilientLayout = BCRecordLayout<
-    IS_RESILIENT
+  using ResilienceStrategyLayout = BCRecordLayout<
+    RESILIENCE_STRATEGY,
+    BCFixed<2>
   >;
 }
 
@@ -576,7 +579,6 @@ namespace decls_block {
     TUPLE_TYPE_ELT,
     IdentifierIDField,    // name
     TypeIDField,          // type
-    DefaultArgumentField, // default argument
     BCFixed<1>            // vararg?
   >;
 
@@ -586,8 +588,8 @@ namespace decls_block {
     TypeIDField, // output
     FunctionTypeRepresentationField, // representation
     BCFixed<1>,  // auto-closure?
-    BCFixed<1>,  // noreturn?
     BCFixed<1>,  // noescape?
+    BCFixed<1>,  // explicitlyEscaping?
     BCFixed<1>   // throws?
   >;
 
@@ -679,7 +681,6 @@ namespace decls_block {
     TypeIDField, // output
     DeclIDField, // decl that owns the generic params
     FunctionTypeRepresentationField, // representation
-    BCFixed<1>,  // noreturn?
     BCFixed<1>   // throws?
     // Trailed by its generic parameters, if the owning decl ID is 0.
   >;
@@ -689,7 +690,6 @@ namespace decls_block {
     TypeIDField,         // input
     TypeIDField,         // output
     FunctionTypeRepresentationField, // representation
-    BCFixed<1>,          // noreturn?
     BCFixed<1>,          // throws?
     BCArray<TypeIDField> // generic parameters
                          // followed by requirements
@@ -699,7 +699,7 @@ namespace decls_block {
     SIL_FUNCTION_TYPE,
     ParameterConventionField, // callee convention
     SILFunctionTypeRepresentationField, // representation
-    BCFixed<1>,            // noreturn?
+    BCFixed<1>,            // pseudogeneric?
     BCFixed<1>,            // error result?
     BCFixed<30>,           // number of parameters
     BCFixed<30>,           // number of results
@@ -757,6 +757,7 @@ namespace decls_block {
     TypeIDField, // interface type
     BCFixed<1>,  // implicit flag
     AccessibilityKindField // accessibility
+    // Trailed by generic parameters (if any).
   >;
 
   using GenericTypeParamDeclLayout = BCRecordLayout<
@@ -812,7 +813,6 @@ namespace decls_block {
     BCFixed<1>,        // implicit?
     BCFixed<1>,        // explicitly objc?
     BCFixed<1>,        // requires stored property initial values
-    BCFixed<1>,        // foreign
     TypeIDField,       // superclass
     AccessibilityKindField, // accessibility
     BCVBR<4>,               // number of conformances
@@ -849,6 +849,7 @@ namespace decls_block {
     BCFixed<1>,  // implicit?
     BCFixed<1>,  // objc?
     BCFixed<1>,  // stub implementation?
+    BCFixed<1>,  // throws?
     CtorInitializerKindField,  // initializer kind
     TypeIDField, // type (signature)
     TypeIDField, // type (interface)
@@ -902,6 +903,7 @@ namespace decls_block {
     BCFixed<1>,   // explicitly objc?
     BCFixed<1>,   // mutating?
     BCFixed<1>,   // has dynamic self?
+    BCFixed<1>,   // throws?
     BCVBR<5>,     // number of parameter patterns
     TypeIDField,  // type (signature)
     TypeIDField,  // interface type
@@ -1369,14 +1371,6 @@ namespace decls_block {
     BCVBR<5>,   // number of bytes in rename string
     BCVBR<5>,   // number of bytes in message string
     BCBlob      // rename, followed by message
-  >;
-
-  using WarnUnusedResultDeclAttrLayout = BCRecordLayout<
-    WarnUnusedResult_DECL_ATTR,
-    BCFixed<1>, // implicit flag
-    BCVBR<6>,  // index at the end of the message,
-    BCBlob     // blob contains the message and mutating-version
-               // strings, separated by the prior index
   >;
 
   using SpecializeDeclAttrLayout = BCRecordLayout<

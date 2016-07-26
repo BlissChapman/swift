@@ -119,8 +119,8 @@ public:
   Optional<SILDeclRef> ObjCBoolToBoolFn;
   Optional<SILDeclRef> BoolToDarwinBooleanFn;
   Optional<SILDeclRef> DarwinBooleanToBoolFn;
-  Optional<SILDeclRef> NSErrorToErrorProtocolFn;
-  Optional<SILDeclRef> ErrorProtocolToNSErrorFn;
+  Optional<SILDeclRef> NSErrorToErrorFn;
+  Optional<SILDeclRef> ErrorToNSErrorFn;
 
   Optional<ProtocolDecl*> PointerProtocol;
 
@@ -350,8 +350,12 @@ public:
   SILDeclRef getObjCBoolToBoolFn();
   SILDeclRef getBoolToDarwinBooleanFn();
   SILDeclRef getDarwinBooleanToBoolFn();
-  SILDeclRef getNSErrorToErrorProtocolFn();
-  SILDeclRef getErrorProtocolToNSErrorFn();
+  SILDeclRef getNSErrorToErrorFn();
+  SILDeclRef getErrorToNSErrorFn();
+
+#define FUNC_DECL(NAME, ID) \
+  FuncDecl *get##NAME(SILLocation loc);
+#include "swift/AST/KnownDecls.def"
   
   /// Retrieve the _ObjectiveCBridgeable protocol definition.
   ProtocolDecl *getObjectiveCBridgeable(SILLocation loc);
@@ -402,6 +406,11 @@ public:
   CanAnyFunctionType
   substSelfTypeIntoProtocolRequirementType(CanGenericFunctionType reqtTy,
                                            ProtocolConformance *conformance);
+
+  /// Emit a `mark_function_escape` instruction for top-level code when a
+  /// function or closure at top level refers to script globals.
+  void emitMarkFunctionEscapeForTopLevelCodeGlobals(SILLocation loc,
+                                                const CaptureInfo &captureInfo);
 
 private:
   /// Emit the deallocator for a class that uses the objc allocator.

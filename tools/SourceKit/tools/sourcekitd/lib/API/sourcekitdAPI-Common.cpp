@@ -13,6 +13,7 @@
 #include "DictionaryKeys.h"
 #include "sourcekitd/Internal.h"
 #include "sourcekitd/Logging.h"
+#include "sourcekitd/RequestResponsePrinterBase.h"
 #include "SourceKit/Support/Logging.h"
 #include "SourceKit/Support/UIdent.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -57,6 +58,8 @@ UIdent sourcekitd::KeyAccessibility("key.accessibility");
 UIdent sourcekitd::KeySetterAccessibility("key.setter_accessibility");
 UIdent sourcekitd::KeyUSR("key.usr");
 UIdent sourcekitd::KeyOriginalUSR("key.original_usr");
+UIdent sourcekitd::KeyDefaultImplementationOf("key.default_implementation_of");
+UIdent sourcekitd::KeyInterestedUSR("key.interested_usr");
 UIdent sourcekitd::KeyLine("key.line");
 UIdent sourcekitd::KeyColumn("key.column");
 UIdent sourcekitd::KeyReceiverUSR("key.receiver_usr");
@@ -120,6 +123,7 @@ UIdent sourcekitd::KeySimplified("key.simplified");
 
 UIdent sourcekitd::KeyIsDeprecated("key.is_deprecated");
 UIdent sourcekitd::KeyIsUnavailable("key.is_unavailable");
+UIdent sourcekitd::KeyIsOptional("key.is_optional");
 UIdent sourcekitd::KeyPlatform("key.platform");
 UIdent sourcekitd::KeyMessage("key.message");
 UIdent sourcekitd::KeyIntroduced("key.introduced");
@@ -127,6 +131,8 @@ UIdent sourcekitd::KeyDeprecated("key.deprecated");
 UIdent sourcekitd::KeyObsoleted("key.obsoleted");
 UIdent sourcekitd::KeyRemoveCache("key.removecache");
 UIdent sourcekitd::KeyTypeInterface("key.typeinterface");
+UIdent sourcekitd::KeyTypeUsr("key.typeusr");
+UIdent sourcekitd::KeyContainerTypeUsr("key.containertypeusr");
 UIdent sourcekitd::KeyModuleGroups("key.modulegroups");
 
 /// \brief Order for the keys to use when emitting the debug description of
@@ -144,6 +150,8 @@ static UIdent *OrderedKeys[] = {
   &KeyName,
   &KeyUSR,
   &KeyOriginalUSR,
+  &KeyDefaultImplementationOf,
+  &KeyInterestedUSR,
   &KeyGenericParams,
   &KeyGenericRequirements,
   &KeyDocFullAsXML,
@@ -209,6 +217,7 @@ static UIdent *OrderedKeys[] = {
   &KeyPlatform,
   &KeyIsDeprecated,
   &KeyIsUnavailable,
+  &KeyIsOptional,
   &KeyMessage,
   &KeyIntroduced,
   &KeyDeprecated,
@@ -292,77 +301,12 @@ public:
   }
 };
 
-class VariantPrinter : public VariantVisitor<VariantPrinter> {
-  raw_ostream &OS;
-  unsigned Indent;
-  bool PrintAsJSON;
+class VariantPrinter : public VariantVisitor<VariantPrinter>,   
+                       public RequestResponsePrinterBase<VariantPrinter,
+                                                         sourcekitd_variant_t> {
 public:
   VariantPrinter(raw_ostream &OS, unsigned Indent = 0, bool PrintAsJSON = false)
-    : OS(OS), Indent(Indent), PrintAsJSON(PrintAsJSON) { }
-
-  void visitNull() {
-    OS << "<<NULL>>";
-  }
-
-  void visitDictionary(const DictMap &Map) {
-    OS << "{\n";
-    Indent += 2;
-    for (unsigned i = 0, e = Map.size(); i != e; ++i) {
-      auto &Pair = Map[i];
-      OS.indent(Indent);
-      if (PrintAsJSON) {
-        visitString(Pair.first.getName());
-      } else {
-        OSColor(OS, DictKeyColor) << Pair.first.getName();
-      }
-      OS << ": ";
-      VariantPrinter(OS, Indent, PrintAsJSON).visit(Pair.second);
-      if (i < e-1)
-        OS << ',';
-      OS << '\n';
-    }
-    Indent -= 2;
-    OS.indent(Indent) << '}';
-  }
-
-  void visitArray(ArrayRef<sourcekitd_variant_t> Arr) {
-    OS << "[\n";
-    Indent += 2;
-    for (unsigned i = 0, e = Arr.size(); i != e; ++i) {
-      auto Obj = Arr[i];
-      OS.indent(Indent);
-      VariantPrinter(OS, Indent, PrintAsJSON).visit(Obj);
-      if (i < e-1)
-        OS << ',';
-      OS << '\n';
-    }
-    Indent -= 2;
-    OS.indent(Indent) << ']';
-  }
-
-  void visitInt64(int64_t Val) {
-    OS << Val;
-  }
-
-  void visitBool(bool Val) {
-    OS << Val;
-  }
-
-  void visitString(StringRef Str) {
-    OS << '\"';
-    // Avoid raw_ostream's write_escaped, we don't want to escape unicode
-    // characters because it will be invalid JSON.
-    writeEscaped(Str, OS);
-    OS << '\"';
-  }
-
-  void visitUID(StringRef UID) {
-    if (PrintAsJSON) {
-      visitString(UID);
-    } else {
-      OSColor(OS, UIDColor) << UID;
-    }
-  }
+    : RequestResponsePrinterBase(OS, Indent, PrintAsJSON) { }
 };
 }
 
@@ -506,6 +450,47 @@ sourcekitd_response_description_copy(sourcekitd_response_t resp) {
   llvm::SmallString<128> Desc;
   llvm::raw_svector_ostream OS(Desc);
   printResponse(resp, OS);
+  return strdup(Desc.c_str());
+}
+
+
+sourcekitd_uid_t
+sourcekitd_uid_get_from_cstr(const char *string) {
+  return SKDUIDFromUIdent(UIdent(string));
+}
+
+sourcekitd_uid_t
+sourcekitd_uid_get_from_buf(const char *buf, size_t length) {
+  return SKDUIDFromUIdent(UIdent(llvm::StringRef(buf, length)));
+}
+
+size_t
+sourcekitd_uid_get_length(sourcekitd_uid_t uid) {
+  UIdent UID = UIdentFromSKDUID(uid);
+  return UID.getName().size();
+}
+
+const char *
+sourcekitd_uid_get_string_ptr(sourcekitd_uid_t uid) {
+  UIdent UID = UIdentFromSKDUID(uid);
+  return UID.getName().begin();
+}
+
+void
+sourcekitd_request_description_dump(sourcekitd_object_t obj) {
+  // Avoid colors here, we don't properly detect that the debug window inside
+  // Xcode doesn't support colors.
+  llvm::SmallString<128> Desc;
+  llvm::raw_svector_ostream OS(Desc);
+  printRequestObject(obj, OS);
+  llvm::errs() << OS.str() << '\n';
+}
+
+char *
+sourcekitd_request_description_copy(sourcekitd_object_t obj) {
+  llvm::SmallString<128> Desc;
+  llvm::raw_svector_ostream OS(Desc);
+  printRequestObject(obj, OS);
   return strdup(Desc.c_str());
 }
 

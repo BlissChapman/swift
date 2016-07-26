@@ -43,6 +43,14 @@ static bool seemsUseful(SILInstruction *I) {
   if (I->mayHaveSideEffects())
     return true;
 
+  if (auto *BI = dyn_cast<BuiltinInst>(I)) {
+    // Although the onFastPath builtin has no side-effects we don't want to
+    // remove it.
+    if (BI->getBuiltinInfo().ID == BuiltinValueKind::OnFastPath)
+      return true;
+    return false;
+  }
+
   if (isa<ReturnInst>(I) || isa<UnreachableInst>(I) || isa<ThrowInst>(I))
     return true;
 
@@ -104,7 +112,7 @@ class DCE : public SILFunctionTransform {
     auto* DA = PM->getAnalysis<PostDominanceAnalysis>();
     PDT = DA->get(F);
 
-    // If we have a functions that consists of nothing but a
+    // If we have a function that consists of nothing but a
     // structurally infinite loop like:
     //   while true {}
     // we'll have an empty post dominator tree.

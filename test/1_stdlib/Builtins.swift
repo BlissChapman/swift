@@ -15,19 +15,10 @@
 // RUN: %target-run %t/Builtins
 // REQUIRES: executable_test
 
-// XFAIL: interpret
-
 import Swift
 import SwiftShims
 import StdlibUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-import SwiftPrivate
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 #if _runtime(_ObjC)
 import Foundation
@@ -66,7 +57,7 @@ tests.test("_isUnique_native/SpareBitTrap")
   // Fake an ObjC pointer.
   var b = _makeObjCBridgeObject(X())
   expectCrashLater()
-  _isUnique_native(&b)
+  _ = _isUnique_native(&b)
 }
 
 tests.test("_isUniqueOrPinned_native/SpareBitTrap")
@@ -77,7 +68,7 @@ tests.test("_isUniqueOrPinned_native/SpareBitTrap")
   // Fake an ObjC pointer.
   var b = _makeObjCBridgeObject(X())
   expectCrashLater()
-  _isUniqueOrPinned_native(&b)
+  _ = _isUniqueOrPinned_native(&b)
 }
 
 tests.test("_isUnique_native/NonNativeTrap")
@@ -87,7 +78,7 @@ tests.test("_isUnique_native/NonNativeTrap")
   .code {
   var x = XObjC()
   expectCrashLater()
-  _isUnique_native(&x)
+  _ = _isUnique_native(&x)
 }
 
 tests.test("_isUniqueOrPinned_native/NonNativeTrap")
@@ -97,7 +88,7 @@ tests.test("_isUniqueOrPinned_native/NonNativeTrap")
   .code {
   var x = XObjC()
   expectCrashLater()
-  _isUniqueOrPinned_native(&x)
+  _ = _isUniqueOrPinned_native(&x)
 }
 #endif // _ObjC
 
@@ -136,18 +127,18 @@ struct Large : P {
 
 struct ContainsP { var p: P }
 
-func exerciseArrayValueWitnesses<T>(value: T) {
-  let buf = UnsafeMutablePointer<T>(allocatingCapacity: 5)
+func exerciseArrayValueWitnesses<T>(_ value: T) {
+  let buf = UnsafeMutablePointer<T>.allocate(capacity: 5)
 
-  (buf + 0).initialize(with: value)
-  (buf + 1).initialize(with: value)
+  (buf + 0).initialize(to: value)
+  (buf + 1).initialize(to: value)
   
   Builtin.copyArray(T.self, (buf + 2)._rawValue, buf._rawValue, 2._builtinWordValue)
   Builtin.takeArrayBackToFront(T.self, (buf + 1)._rawValue, buf._rawValue, 4._builtinWordValue)
   Builtin.takeArrayFrontToBack(T.self, buf._rawValue, (buf + 1)._rawValue, 4._builtinWordValue)
   Builtin.destroyArray(T.self, buf._rawValue, 4._builtinWordValue)
 
-  buf.deallocateCapacity(5)
+  buf.deallocate(capacity: 5)
 }
 
 tests.test("array value witnesses") {

@@ -25,7 +25,7 @@ using namespace constraints;
 // Statistics
 //===----------------------------------------------------------------------===//
 #define DEBUG_TYPE "Constraint solver overall"
-STATISTIC(NumDiscardedSolutions, "# of solutions discarded");
+STATISTIC(NumDiscardedSolutions, "Number of solutions discarded");
 
 void ConstraintSystem::increaseScore(ScoreKind kind) {
   unsigned index = static_cast<unsigned>(kind);
@@ -118,7 +118,6 @@ static Type stripInitializers(Type origType) {
                for (const auto &field : tupleTy->getElements()) {
                  fields.push_back(TupleTypeElt(field.getType(),
                                                field.getName(),
-                                               DefaultArgumentKind::None,
                                                field.isVararg()));
                                                
                }
@@ -450,8 +449,8 @@ static bool isProtocolExtensionAsSpecializedAs(TypeChecker &tc,
   // the second protocol extension.
   ConstraintSystem cs(tc, dc1, None);
   llvm::DenseMap<CanType, TypeVariableType *> replacements;
-  cs.openGeneric(dc2, sig2->getGenericParams(), sig2->getRequirements(),
-                 false, dc2->getGenericTypeContextDepth(),
+  cs.openGeneric(dc2, dc2, sig2,
+                 /*skipProtocolSelfConstraint=*/false,
                  ConstraintLocatorBuilder(nullptr),
                  replacements);
 
@@ -572,14 +571,35 @@ static bool isDeclAsSpecializedAs(TypeChecker &tc, DeclContext *dc,
       auto locator = cs.getConstraintLocator(nullptr);
       // FIXME: Locator when anchored on a declaration.
       // Get the type of a reference to the second declaration.
-      Type openedType2 = cs.openType(type2, locator,
-                                     decl2->getInnermostDeclContext());
+      llvm::DenseMap<CanType, TypeVariableType *> unused;
+      Type openedType2;
+      if (auto *funcType = type2->getAs<AnyFunctionType>()) {
+        openedType2 = cs.openFunctionType(
+            funcType, locator,
+            /*replacements=*/unused,
+            decl2->getInnermostDeclContext(),
+            decl2->getDeclContext(),
+            /*skipProtocolSelfConstraint=*/false);
+      } else {
+        openedType2 = cs.openType(type2, locator, unused);
+      }
 
       // Get the type of a reference to the first declaration, swapping in
       // archetypes for the dependent types.
       llvm::DenseMap<CanType, TypeVariableType *> replacements;
       auto dc1 = decl1->getInnermostDeclContext();
-      Type openedType1 = cs.openType(type1, locator, replacements, dc1);
+      Type openedType1;
+      if (auto *funcType = type1->getAs<AnyFunctionType>()) {
+        openedType1 = cs.openFunctionType(
+            funcType, locator,
+            replacements,
+            dc1,
+            decl1->getDeclContext(),
+            /*skipProtocolSelfConstraint=*/false);
+      } else {
+        openedType1 = cs.openType(type1, locator, replacements);
+      }
+
       for (const auto &replacement : replacements) {
         if (auto mapped = 
                   ArchetypeBuilder::mapTypeIntoContext(dc1,
@@ -625,11 +645,17 @@ static bool isDeclAsSpecializedAs(TypeChecker &tc, DeclContext *dc,
         break;
 
       case SelfTypeRelationship::ConformsTo:
-        cs.addConstraint(ConstraintKind::ConformsTo, selfTy1, selfTy2, locator);
+        cs.addConstraint(ConstraintKind::ConformsTo, selfTy1,
+                         cast<ProtocolDecl>(decl2->getDeclContext())
+                           ->getDeclaredType(),
+                         locator);
         break;
 
       case SelfTypeRelationship::ConformedToBy:
-        cs.addConstraint(ConstraintKind::ConformsTo, selfTy2, selfTy1, locator);
+        cs.addConstraint(ConstraintKind::ConformsTo, selfTy2,
+                         cast<ProtocolDecl>(decl1->getDeclContext())
+                           ->getDeclaredType(),
+                         locator);
         break;
       }
 
@@ -649,9 +675,11 @@ static bool isDeclAsSpecializedAs(TypeChecker &tc, DeclContext *dc,
         auto funcTy1 = openedType1->castTo<FunctionType>();
         auto funcTy2 = openedType2->castTo<FunctionType>();
         SmallVector<CallArgParam, 4> params1 =
-          decomposeArgParamType(funcTy1->getInput());
+          decomposeParamType(funcTy1->getInput(), decl1,
+                             decl1->getDeclContext()->isTypeContext());
         SmallVector<CallArgParam, 4> params2 =
-          decomposeArgParamType(funcTy2->getInput());
+          decomposeParamType(funcTy2->getInput(), decl2,
+                             decl2->getDeclContext()->isTypeContext());
 
         unsigned numParams1 = params1.size();
         unsigned numParams2 = params2.size();

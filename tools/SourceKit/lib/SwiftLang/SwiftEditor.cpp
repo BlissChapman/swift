@@ -23,6 +23,7 @@
 #include "swift/AST/AST.h"
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/ASTWalker.h"
+#include "swift/AST/SourceEntityWalker.h"
 #include "swift/AST/DiagnosticsClangImporter.h"
 #include "swift/AST/DiagnosticsParse.h"
 #include "swift/Basic/SourceManager.h"
@@ -32,7 +33,6 @@
 #include "swift/IDE/CommentConversion.h"
 #include "swift/IDE/Formatting.h"
 #include "swift/IDE/SyntaxModel.h"
-#include "swift/IDE/SourceEntityWalker.h"
 #include "swift/Subsystems.h"
 
 #include "llvm/Support/MemoryBuffer.h"
@@ -746,7 +746,7 @@ void SwiftDocumentSemanticInfo::updateSemanticInfo(
 
   {
     llvm::sys::ScopedLock L(Mtx);
-    if(ASTGeneration > this->ASTGeneration) {
+    if (ASTGeneration > this->ASTGeneration) {
       SemaToks = std::move(Toks);
       SemaDiags = std::move(Diags);
       TokSnapshot = DiagSnapshot = std::move(Snapshot);
@@ -958,11 +958,14 @@ namespace  {
 static UIdent getAccessibilityUID(Accessibility Access) {
   static UIdent AccessPublic("source.lang.swift.accessibility.public");
   static UIdent AccessInternal("source.lang.swift.accessibility.internal");
+  static UIdent AccessFilePrivate("source.lang.swift.accessibility.fileprivate");
   static UIdent AccessPrivate("source.lang.swift.accessibility.private");
 
   switch (Access) {
   case Accessibility::Private:
     return AccessPrivate;
+  case Accessibility::FilePrivate:
+    return AccessFilePrivate;
   case Accessibility::Internal:
     return AccessInternal;
   case Accessibility::Public:
@@ -1033,76 +1036,6 @@ inferSetterAccessibility(const AbstractStorageDecl *D) {
     return AA->getAccess();
   else
     return inferAccessibility(D);
-}
-
-std::vector<UIdent> UIDsFromDeclAttributes(const DeclAttributes &Attrs) {
-  std::vector<UIdent> AttrUIDs;
-
-#define ATTR(X) \
-  if (Attrs.has(AK_##X)) { \
-    static UIdent Attr_##X("source.decl.attribute."#X); \
-    AttrUIDs.push_back(Attr_##X); \
-  }
-#include "swift/AST/Attr.def"
-
-  for (auto Attr : Attrs) {
-    // Check special-case names first.
-    switch (Attr->getKind()) {
-    case DAK_IBAction: {
-      static UIdent Attr_IBAction("source.decl.attribute.ibaction");
-      AttrUIDs.push_back(Attr_IBAction);
-      continue;
-    }
-    case DAK_IBOutlet: {
-      static UIdent Attr_IBOutlet("source.decl.attribute.iboutlet");
-      AttrUIDs.push_back(Attr_IBOutlet);
-      continue;
-    }
-    case DAK_IBDesignable: {
-      static UIdent Attr_IBDesignable("source.decl.attribute.ibdesignable");
-      AttrUIDs.push_back(Attr_IBDesignable);
-      continue;
-    }
-    case DAK_IBInspectable: {
-      static UIdent Attr_IBInspectable("source.decl.attribute.ibinspectable");
-      AttrUIDs.push_back(Attr_IBInspectable);
-      continue;
-    }
-    case DAK_ObjC: {
-      static UIdent Attr_Objc("source.decl.attribute.objc");
-      static UIdent Attr_ObjcNamed("source.decl.attribute.objc.name");
-      if (cast<ObjCAttr>(Attr)->hasName()) {
-        AttrUIDs.push_back(Attr_ObjcNamed);
-      } else {
-        AttrUIDs.push_back(Attr_Objc);
-      }
-      continue;
-    }
-
-    // We handle accessibility explicitly.
-    case DAK_Accessibility:
-    case DAK_SetterAccessibility:
-    // Ignore these.
-    case DAK_ShowInInterface:
-      continue;
-    default:
-      break;
-    }
-
-    switch (Attr->getKind()) {
-    case DAK_Count:
-      break;
-#define DECL_ATTR(X, CLASS, ...)\
-    case DAK_##CLASS: {\
-      static UIdent Attr_##X("source.decl.attribute."#X); \
-      AttrUIDs.push_back(Attr_##X); \
-      break;\
-    }
-#include "swift/AST/Attr.def"
-    }
-  }
-
-  return AttrUIDs;
 }
 
 class SwiftDocumentStructureWalker: public ide::SyntaxModelWalker {
@@ -1189,7 +1122,7 @@ public:
     SmallString<64> SelectorNameBuf;
     StringRef SelectorName = getObjCSelectorName(Node.Dcl, SelectorNameBuf);
 
-    std::vector<UIdent> Attrs = UIDsFromDeclAttributes(Node.Attrs);
+    std::vector<UIdent> Attrs = SwiftLangSupport::UIDsFromDeclAttributes(Node.Attrs);
 
     Consumer.beginDocumentSubStructure(StartOffset, EndOffset - StartOffset,
                                        Kind, AccessLevel, SetterAccessLevel,
@@ -1421,6 +1354,7 @@ public:
 };
 
 class PlaceholderExpansionScanner {
+
 public:
   struct Param {
     CharSourceRange NameRange;
@@ -1430,9 +1364,14 @@ public:
   };
 
 private:
+
+  struct ClosureInfo {
+    std::vector<Param> Params;
+    CharSourceRange ReturnTypeRange;
+  };
+
   SourceManager &SM;
-  std::vector<Param> Params;
-  CharSourceRange ReturnTypeRange;
+  ClosureInfo TargetClosureInfo;
   EditorPlaceholderExpr *PHE = nullptr;
 
   class PlaceholderFinder: public ASTWalker {
@@ -1454,61 +1393,80 @@ private:
     }
   };
 
+  class ClosureTypeWalker: public ASTWalker {
+    SourceManager &SM;
+    ClosureInfo &Info;
+  public:
+    bool FoundFunctionTypeRepr = false;
+    explicit ClosureTypeWalker(SourceManager &SM, ClosureInfo &Info) : SM(SM),
+      Info(Info) { }
+
+    bool walkToTypeReprPre(TypeRepr *T) override {
+      if (auto *FTR = dyn_cast<FunctionTypeRepr>(T)) {
+        FoundFunctionTypeRepr = true;
+        if (auto *TTR = dyn_cast_or_null<TupleTypeRepr>(FTR->getArgsTypeRepr())) {
+          for (auto *ArgTR : TTR->getElements()) {
+            CharSourceRange NR;
+            CharSourceRange TR;
+            auto *NTR = dyn_cast<NamedTypeRepr>(ArgTR);
+            if (NTR && NTR->hasName()) {
+              NR = CharSourceRange(NTR->getNameLoc(),
+                                   NTR->getName().getLength());
+              ArgTR = NTR->getTypeRepr();
+            }
+            SourceLoc SRE = Lexer::getLocForEndOfToken(SM,
+                                                       ArgTR->getEndLoc());
+            TR = CharSourceRange(SM, ArgTR->getStartLoc(), SRE);
+            Info.Params.emplace_back(NR, TR);
+          }
+        } else if (FTR->getArgsTypeRepr()) {
+          CharSourceRange TR;
+          TR = CharSourceRange(SM, FTR->getArgsTypeRepr()->getStartLoc(),
+                               Lexer::getLocForEndOfToken(SM,
+                                        FTR->getArgsTypeRepr()->getEndLoc()));
+          Info.Params.emplace_back(CharSourceRange(), TR);
+        }
+        if (auto *RTR = FTR->getResultTypeRepr()) {
+          SourceLoc SRE = Lexer::getLocForEndOfToken(SM, RTR->getEndLoc());
+          Info.ReturnTypeRange = CharSourceRange(SM, RTR->getStartLoc(), SRE);
+        }
+      }
+      return !FoundFunctionTypeRepr;
+    }
+
+    bool walkToTypeReprPost(TypeRepr *T) override {
+      // If we just visited the FunctionTypeRepr, end traversal.
+      return !FoundFunctionTypeRepr;
+    }
+
+  };
+
+  bool containClosure(Expr *E) {
+    if (E->getStartLoc().isInvalid())
+      return false;
+    EditorPlaceholderExpr *Found;
+    ClosureInfo Info;
+    ClosureTypeWalker ClosureWalker(SM, Info);
+    PlaceholderFinder Finder(E->getStartLoc(), Found);
+    E->walk(Finder);
+    if (Found) {
+      if (auto TR = Found->getTypeLoc().getTypeRepr()) {
+        TR->walk(ClosureWalker);
+        return ClosureWalker.FoundFunctionTypeRepr;
+      }
+    }
+    E->walk(ClosureWalker);
+    return ClosureWalker.FoundFunctionTypeRepr;
+  }
+
   bool scanClosureType(SourceFile &SF, SourceLoc PlaceholderLoc) {
-    Params.clear();
-    ReturnTypeRange = CharSourceRange();
+    TargetClosureInfo.Params.clear();
+    TargetClosureInfo.ReturnTypeRange = CharSourceRange();
     PlaceholderFinder Finder(PlaceholderLoc, PHE);
     SF.walk(Finder);
     if (!PHE || !PHE->getTypeForExpansion())
       return false;
-
-    class ClosureTypeWalker: public ASTWalker {
-    public:
-      PlaceholderExpansionScanner &S;
-      bool FoundFunctionTypeRepr = false;
-      explicit ClosureTypeWalker(PlaceholderExpansionScanner &S)
-        :S(S) { }
-
-      bool walkToTypeReprPre(TypeRepr *T) override {
-        if (auto *FTR = dyn_cast<FunctionTypeRepr>(T)) {
-          FoundFunctionTypeRepr = true;
-          if (auto *TTR = dyn_cast_or_null<TupleTypeRepr>(FTR->getArgsTypeRepr())) {
-            for (auto *ArgTR : TTR->getElements()) {
-              CharSourceRange NR;
-              CharSourceRange TR;
-              auto *NTR = dyn_cast<NamedTypeRepr>(ArgTR);
-              if (NTR && NTR->hasName()) {
-                NR = CharSourceRange(NTR->getNameLoc(),
-                                     NTR->getName().getLength());
-                ArgTR = NTR->getTypeRepr();
-              }
-              SourceLoc SRE = Lexer::getLocForEndOfToken(S.SM,
-                                                         ArgTR->getEndLoc());
-              TR = CharSourceRange(S.SM, ArgTR->getStartLoc(), SRE);
-              S.Params.emplace_back(NR, TR);
-            }
-          } else if (FTR->getArgsTypeRepr()) {
-            CharSourceRange TR;
-            TR = CharSourceRange(S.SM, FTR->getArgsTypeRepr()->getStartLoc(),
-                                 Lexer::getLocForEndOfToken(S.SM,
-                                   FTR->getArgsTypeRepr()->getEndLoc()));
-            S.Params.emplace_back(CharSourceRange(), TR);
-          }
-          if (auto *RTR = FTR->getResultTypeRepr()) {
-            SourceLoc SRE = Lexer::getLocForEndOfToken(S.SM, RTR->getEndLoc());
-            S.ReturnTypeRange = CharSourceRange(S.SM, RTR->getStartLoc(), SRE);
-          }
-        }
-        return !FoundFunctionTypeRepr;
-      }
-
-      bool walkToTypeReprPost(TypeRepr *T) override {
-        // If we just visited the FunctionTypeRepr, end traversal.
-        return !FoundFunctionTypeRepr;
-      }
-
-    } PW(*this);
-
+    ClosureTypeWalker PW(SM, TargetClosureInfo);
     PHE->getTypeForExpansion()->walk(PW);
     return PW.FoundFunctionTypeRepr;
   }
@@ -1520,7 +1478,7 @@ private:
   /// closure should not be applied to the inner call.
   std::pair<CallExpr *, bool> enclosingCallExpr(SourceFile &SF, SourceLoc SL) {
 
-    class CallExprFinder: public ide::SourceEntityWalker {
+    class CallExprFinder : public SourceEntityWalker {
     public:
       const SourceManager &SM;
       SourceLoc TargetLoc;
@@ -1553,7 +1511,7 @@ private:
       bool walkToStmtPre(Stmt *S) override {
         auto SR = S->getSourceRange();
         if (SR.isValid() && SM.rangeContainsTokenLoc(SR, TargetLoc)) {
-          if(!EnclosingCall && !isa<BraceStmt>(S))
+          if (!EnclosingCall && !isa<BraceStmt>(S))
             OuterStmt = S;
         }
         return true;
@@ -1580,6 +1538,22 @@ private:
       return std::make_pair(CE, false);
 
     return std::make_pair(CE, true);
+  }
+
+  bool shouldUseTrailingClosureInTuple(TupleExpr *TE,
+                                       SourceLoc PlaceHolderStartLoc) {
+    if (!TE->getElements().empty()) {
+      for (unsigned I = 0, N = TE->getNumElements(); I < N; ++ I) {
+        bool IsLast = I == N - 1;
+        Expr *E = TE->getElement(I);
+        if (IsLast) {
+          return E->getStartLoc() == PlaceHolderStartLoc;
+        } else if (containClosure(E)) {
+          return false;
+        }
+      }
+    }
+    return false;
   }
 
 public:
@@ -1613,13 +1587,13 @@ public:
       if (isa<ParenExpr>(Args)) {
         UseTrailingClosure = true;
       } else if (auto *TE = dyn_cast<TupleExpr>(Args)) {
-        if (!TE->getElements().empty())
-          UseTrailingClosure =
-            TE->getElements().back()->getStartLoc() == PlaceholderStartLoc;
+        UseTrailingClosure = shouldUseTrailingClosureInTuple(TE,
+                                                          PlaceholderStartLoc);
       }
     }
 
-    Callback(Args, UseTrailingClosure, Params, ReturnTypeRange);
+    Callback(Args, UseTrailingClosure, TargetClosureInfo.Params,
+             TargetClosureInfo.ReturnTypeRange);
     return true;
   }
 

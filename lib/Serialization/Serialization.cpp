@@ -26,6 +26,7 @@
 #include "swift/Basic/STLExtras.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Basic/Timer.h"
+#include "swift/Basic/Version.h"
 #include "swift/ClangImporter/ClangImporter.h"
 #include "swift/ClangImporter/ClangModule.h"
 #include "swift/Serialization/SerializationOptions.h"
@@ -54,6 +55,7 @@
 using namespace swift;
 using namespace swift::serialization;
 using namespace llvm::support;
+using swift::version::Version;
 using llvm::BCBlockRAII;
 
 /// Used for static_assert.
@@ -438,7 +440,7 @@ void Serializer::writeBlockInfoBlock() {
   BLOCK_RECORD(options_block, XCC);
   BLOCK_RECORD(options_block, IS_SIB);
   BLOCK_RECORD(options_block, IS_TESTABLE);
-  BLOCK_RECORD(options_block, IS_RESILIENT);
+  BLOCK_RECORD(options_block, RESILIENCE_STRATEGY);
 
   BLOCK(INPUT_BLOCK);
   BLOCK_RECORD(input_block, IMPORTED_MODULE);
@@ -571,15 +573,14 @@ void Serializer::writeHeader(const SerializationOptions &options) {
 
     ModuleName.emit(ScratchRecord, M->getName().str());
 
-    // FIXME: put a real version in here.
-#ifdef LLVM_VERSION_INFO
-# define EXTRA_VERSION_STRING PACKAGE_STRING LLVM_VERSION_INFO
-#else
-# define EXTRA_VERSION_STRING PACKAGE_STRING
-#endif
+    SmallString<32> versionStringBuf;
+    llvm::raw_svector_ostream versionString(versionStringBuf);
+    versionString << Version::getCurrentLanguageVersion();
+    size_t shortVersionStringLength = versionString.tell();
+    versionString << '/' << version::getSwiftFullVersion();
     Metadata.emit(ScratchRecord,
-                  VERSION_MAJOR, VERSION_MINOR, EXTRA_VERSION_STRING);
-#undef EXTRA_VERSION_STRING
+                  VERSION_MAJOR, VERSION_MINOR, shortVersionStringLength,
+                  versionString.str());
 
     Target.emit(ScratchRecord, M->getASTContext().LangOpts.Target.str());
 
@@ -594,9 +595,9 @@ void Serializer::writeHeader(const SerializationOptions &options) {
         IsTestable.emit(ScratchRecord);
       }
 
-      if (M->isResilienceEnabled()) {
-        options_block::IsResilientLayout IsResilient(Out);
-        IsResilient.emit(ScratchRecord);
+      if (M->getResilienceStrategy() != ResilienceStrategy::Default) {
+        options_block::ResilienceStrategyLayout Strategy(Out);
+        Strategy.emit(ScratchRecord, unsigned(M->getResilienceStrategy()));
       }
 
       if (options.SerializeOptionsForDebugging) {
@@ -619,15 +620,10 @@ void Serializer::writeDocHeader() {
     control_block::MetadataLayout Metadata(Out);
     control_block::TargetLayout Target(Out);
 
-    // FIXME: put a real version in here.
-#ifdef LLVM_VERSION_INFO
-# define EXTRA_VERSION_STRING PACKAGE_STRING LLVM_VERSION_INFO
-#else
-# define EXTRA_VERSION_STRING PACKAGE_STRING
-#endif
     Metadata.emit(ScratchRecord,
-                  VERSION_MAJOR, VERSION_MINOR, EXTRA_VERSION_STRING);
-#undef EXTRA_VERSION_STRING
+                  VERSION_MAJOR, VERSION_MINOR,
+                  /*short version string length*/0,
+                  version::getSwiftFullVersion());
 
     Target.emit(ScratchRecord, M->getASTContext().LangOpts.Target.str());
   }
@@ -1549,6 +1545,7 @@ static uint8_t getRawStableAccessibility(Accessibility access) {
   case Accessibility::NAME: \
     return static_cast<uint8_t>(serialization::AccessibilityKind::NAME);
   CASE(Private)
+  CASE(FilePrivate)
   CASE(Internal)
   CASE(Public)
 #undef CASE
@@ -1785,21 +1782,6 @@ void Serializer::writeDeclAttribute(const DeclAttribute *DA) {
     return;
   }
 
-  case DAK_WarnUnusedResult: {
-    auto *theAttr = cast<WarnUnusedResultAttr>(DA);
-
-    // Compute the blob.
-    SmallString<128> blob;
-    blob += theAttr->getMessage();
-    uint64_t endOfMessageIndex = blob.size();
-    blob += theAttr->getMutableVariant();
-    auto abbrCode = DeclTypeAbbrCodes[WarnUnusedResultDeclAttrLayout::Code];
-    WarnUnusedResultDeclAttrLayout::emitRecord(Out, ScratchRecord, abbrCode,
-                                               theAttr->isImplicit(),
-                                               endOfMessageIndex,
-                                               blob);
-    return;
-  }
   case DAK_Specialize: {
     auto abbrCode = DeclTypeAbbrCodes[SpecializeDeclAttrLayout::Code];
     SmallVector<TypeID, 8> typeIDs;
@@ -2039,7 +2021,7 @@ void Serializer::writeDecl(const Decl *D) {
 
   if (auto *value = dyn_cast<ValueDecl>(D)) {
     if (value->hasAccessibility() &&
-        value->getFormalAccess() == Accessibility::Private &&
+        value->getFormalAccess() <= Accessibility::FilePrivate &&
         !value->getDeclContext()->isLocalContext()) {
       // FIXME: We shouldn't need to encode this for /all/ private decls.
       // In theory we can follow the same rules as mangling and only include
@@ -2210,6 +2192,7 @@ void Serializer::writeDecl(const Decl *D) {
                                 typeAlias->isImplicit(),
                                 rawAccessLevel);
     writeGenericParams(typeAlias->getGenericParams(), DeclTypeAbbrCodes);
+    writeRequirements(typeAlias->getGenericRequirements());
     break;
   }
 
@@ -2328,6 +2311,7 @@ void Serializer::writeDecl(const Decl *D) {
   case DeclKind::Class: {
     auto theClass = cast<ClassDecl>(D);
     verifyAttrSerializable(theClass);
+    assert(!theClass->isForeign());
 
     auto contextID = addDeclContextRef(theClass->getDeclContext());
 
@@ -2349,7 +2333,6 @@ void Serializer::writeDecl(const Decl *D) {
                             theClass->isImplicit(),
                             theClass->isObjC(),
                             theClass->requiresStoredPropertyInits(),
-                            theClass->isForeign(),
                             addTypeRef(theClass->getSuperclass()),
                             rawAccessLevel,
                             conformances.size(),
@@ -2480,6 +2463,7 @@ void Serializer::writeDecl(const Decl *D) {
                            fn->isObjC(),
                            fn->isMutating(),
                            fn->hasDynamicSelf(),
+                           fn->hasThrows(),
                            fn->getParameterLists().size(),
                            addTypeRef(fn->getType()),
                            addTypeRef(fn->getInterfaceType()),
@@ -2599,6 +2583,7 @@ void Serializer::writeDecl(const Decl *D) {
                                   ctor->isImplicit(),
                                   ctor->isObjC(),
                                   ctor->hasStubImplementation(),
+                                  ctor->hasThrows(),
                                   getStableCtorInitializerKind(
                                     ctor->getInitKind()),
                                   addTypeRef(ctor->getType()),
@@ -2795,12 +2780,9 @@ void Serializer::writeType(Type ty) {
 
     abbrCode = DeclTypeAbbrCodes[TupleTypeEltLayout::Code];
     for (auto &elt : tupleTy->getElements()) {
-      uint8_t rawDefaultArg
-        = getRawStableDefaultArgumentKind(elt.getDefaultArgKind());
       TupleTypeEltLayout::emitRecord(Out, ScratchRecord, abbrCode,
                                      addIdentifierRef(elt.getName()),
                                      addTypeRef(elt.getType()),
-                                     rawDefaultArg,
                                      elt.isVararg());
     }
 
@@ -2968,8 +2950,8 @@ void Serializer::writeType(Type ty) {
            addTypeRef(fnTy->getResult()),
            getRawStableFunctionTypeRepresentation(fnTy->getRepresentation()),
            fnTy->isAutoClosure(),
-           fnTy->isNoReturn(),
            fnTy->isNoEscape(),
+           fnTy->isExplicitlyEscaping(),
            fnTy->throws());
     break;
   }
@@ -2985,7 +2967,6 @@ void Serializer::writeType(Type ty) {
             addTypeRef(fnTy->getResult()),
             dID,
             getRawStableFunctionTypeRepresentation(fnTy->getRepresentation()),
-            fnTy->isNoReturn(),
             fnTy->throws());
     if (!genericContext)
       writeGenericParams(&fnTy->getGenericParams(), DeclTypeAbbrCodes);
@@ -3002,7 +2983,6 @@ void Serializer::writeType(Type ty) {
             addTypeRef(fnTy->getInput()),
             addTypeRef(fnTy->getResult()),
             getRawStableFunctionTypeRepresentation(fnTy->getRepresentation()),
-            fnTy->isNoReturn(),
             fnTy->throws(),
             genericParams);
 
@@ -3067,7 +3047,7 @@ void Serializer::writeType(Type ty) {
     SILFunctionTypeLayout::emitRecord(Out, ScratchRecord, abbrCode,
           stableCalleeConvention,
           stableRepresentation,
-          fnTy->isNoReturn(),
+          fnTy->isPseudogeneric(),
           fnTy->hasErrorResult(),
           fnTy->getParameters().size(),
           fnTy->getNumAllResults(),
@@ -3560,7 +3540,7 @@ class YamlGroupInputParser {
           GroupNameAndFileName.append(llvm::sys::path::stem(FileName));
           Map[FileName] = GroupNameAndFileName.str();
         } else if (Entry.getType() == llvm::yaml::Node::NodeKind::NK_Mapping) {
-          if(parseRoot(Map, &Entry, *pCombined))
+          if (parseRoot(Map, &Entry, *pCombined))
             return true;
         } else
           return true;
@@ -3609,7 +3589,7 @@ public:
       return true;
     }
     pFileNameToGroupNameMap pMap(new FileNameToGroupNameMap());
-    if(parseRoot(*pMap, Root, llvm::Twine()))
+    if (parseRoot(*pMap, Root, llvm::Twine()))
       return true;
 
     // Save the parsed map to the owner.
@@ -3630,18 +3610,6 @@ class DeclGroupNameContext {
     StringRef getGroupName(const Decl *VD) {
       return Enable ? getGroupNameInternal(VD) : StringRef(NullGroupName);
     };
-  };
-
-  // FIXME: Implement better name collectors.
-  struct GroupNameCollectorFromFileName : public GroupNameCollector {
-    GroupNameCollectorFromFileName(bool Enable) : GroupNameCollector(Enable) {}
-    StringRef getGroupNameInternal(const Decl *VD) override {
-      auto PathOp = VD->getDeclContext()->getParentSourceFile()->getBufferID();
-      if (!PathOp.hasValue())
-        return NullGroupName;
-      return llvm::sys::path::stem(StringRef(VD->getASTContext().SourceMgr.
-        getIdentifierForBuffer(PathOp.getValue())));
-    }
   };
 
   class GroupNameCollectorFromJson : public GroupNameCollector {
@@ -3696,7 +3664,7 @@ public:
 
   ArrayRef<StringRef> getOrderedGroupNames() {
     ViewBuffer.clear();
-    for(auto It = Map.begin(); It != Map.end(); ++ It) {
+    for (auto It = Map.begin(); It != Map.end(); ++ It) {
       ViewBuffer.push_back(It->first);
     }
     return llvm::makeArrayRef(ViewBuffer);
@@ -3761,7 +3729,7 @@ static void writeDeclCommentTable(
       generator.insert(copyString(USRBuffer.str()),
                        { ED->getBriefComment(), Raw,
                          GroupContext.getGroupSequence(ED),
-                         SourceOrder ++ });
+                         SourceOrder++ });
     }
 
     bool walkToDeclPre(Decl *D) override {
@@ -3808,7 +3776,7 @@ static void writeDeclCommentTable(
       generator.insert(copyString(USRBuffer.str()),
                        { VD->getBriefComment(), Raw,
                          GroupContext.getGroupSequence(VD),
-                         SourceOrder ++ });
+                         SourceOrder++ });
       return true;
     }
   };
@@ -3947,9 +3915,6 @@ static void addOperatorsAndTopLevel(Serializer &S, Range members,
       addOperatorsAndTopLevel(S, iterable->getMembers(),
                              operatorMethodDecls, topLevelDecls, objcMethods,
                              false);
-      addOperatorsAndTopLevel(S, iterable->getDerivedGlobalDecls(),
-                             operatorMethodDecls, topLevelDecls, objcMethods,
-                             true);
     }
 
     // Record Objective-C methods.
@@ -4020,9 +3985,6 @@ void Serializer::writeAST(ModuleOrSourceFile DC) {
         addOperatorsAndTopLevel(*this, IDC->getMembers(),
                                 operatorMethodDecls, topLevelDecls,
                                 objcMethods, false);
-        addOperatorsAndTopLevel(*this, IDC->getDerivedGlobalDecls(),
-                                operatorMethodDecls, topLevelDecls,
-                                objcMethods, true);
       }
     }
 
@@ -4044,9 +4006,6 @@ void Serializer::writeAST(ModuleOrSourceFile DC) {
         addOperatorsAndTopLevel(*this, IDC->getMembers(),
                                 operatorMethodDecls, topLevelDecls,
                                 objcMethods, false, /*isLocal=*/true);
-        addOperatorsAndTopLevel(*this, IDC->getDerivedGlobalDecls(),
-                                operatorMethodDecls, topLevelDecls,
-                                objcMethods, true, /*isLocal=*/true);
       }
     }
   }

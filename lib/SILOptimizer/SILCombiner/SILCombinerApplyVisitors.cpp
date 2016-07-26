@@ -219,13 +219,13 @@ bool PartialApplyCombiner::allocateTemporaries() {
 
 /// Emit dealloc_stack for all temporaries.
 void PartialApplyCombiner::deallocateTemporaries() {
-  // Insert dealloc_stack instructions.
-  TinyPtrVector<SILBasicBlock *> ExitBBs;
-  findAllNonFailureExitBBs(PAI->getFunction(), ExitBBs);
+  // Insert dealloc_stack instructions at all function exit points.
+  for (SILBasicBlock &BB : *PAI->getFunction()) {
+    TermInst *Term = BB.getTerminator();
+    if (!Term->isFunctionExiting())
+      continue;
 
-  for (auto Op : Tmps) {
-    for (auto *ExitBB : ExitBBs) {
-      auto *Term = ExitBB->getTerminator();
+    for (auto Op : Tmps) {
       Builder.setInsertionPoint(Term);
       Builder.createDeallocStack(PAI->getLoc(), Op);
     }
@@ -245,7 +245,7 @@ void PartialApplyCombiner::releaseTemporaries() {
       Builder.setInsertionPoint(EndPoint);
       if (!TmpType.isAddressOnly(PAI->getModule())) {
         auto *Load = Builder.createLoad(PAI->getLoc(), Op);
-        Builder.createReleaseValue(PAI->getLoc(), Load);
+        Builder.createReleaseValue(PAI->getLoc(), Load, Atomicity::Atomic);
       } else {
         Builder.createDestroyAddr(PAI->getLoc(), Op);
       }
@@ -340,20 +340,20 @@ bool PartialApplyCombiner::processSingleApply(FullApplySite AI) {
     for (auto Arg : ToBeReleasedArgs) {
       Builder.emitReleaseValueOperation(PAI->getLoc(), Arg);
     }
-    Builder.createStrongRelease(AI.getLoc(), PAI);
+    Builder.createStrongRelease(AI.getLoc(), PAI, Atomicity::Atomic);
     Builder.setInsertionPoint(TAI->getErrorBB()->begin());
     // Release the non-consumed parameters.
     for (auto Arg : ToBeReleasedArgs) {
       Builder.emitReleaseValueOperation(PAI->getLoc(), Arg);
     }
-    Builder.createStrongRelease(AI.getLoc(), PAI);
+    Builder.createStrongRelease(AI.getLoc(), PAI, Atomicity::Atomic);
     Builder.setInsertionPoint(AI.getInstruction());
   } else {
     // Release the non-consumed parameters.
     for (auto Arg : ToBeReleasedArgs) {
       Builder.emitReleaseValueOperation(PAI->getLoc(), Arg);
     }
-    Builder.createStrongRelease(AI.getLoc(), PAI);
+    Builder.createStrongRelease(AI.getLoc(), PAI, Atomicity::Atomic);
   }
 
   SilCombiner->replaceInstUsesWith(*AI.getInstruction(), NAI.getInstruction());
@@ -482,6 +482,11 @@ SILCombiner::optimizeApplyOfConvertFunctionInst(FullApplySite AI,
 
 bool
 SILCombiner::recursivelyCollectARCUsers(UserListTy &Uses, ValueBase *Value) {
+  // FIXME: We could probably optimize this case too
+  if (auto *AI = dyn_cast<ApplyInst>(Value))
+    if (AI->hasIndirectResults())
+      return false;
+
   for (auto *Use : Value->getUses()) {
     SILInstruction *Inst = Use->getUser();
     if (isa<RefCountingInst>(Inst) ||
@@ -514,7 +519,7 @@ void SILCombiner::eraseApply(FullApplySite FAS, const UserListTy &Users) {
         Builder.createDestroyAddr(FAS.getLoc(), Arg);
         break;
       case ParameterConvention::Direct_Owned:
-        Builder.createReleaseValue(FAS.getLoc(), Arg);
+        Builder.createReleaseValue(FAS.getLoc(), Arg, Atomicity::Atomic);
         break;
       case ParameterConvention::Indirect_In_Guaranteed:
       case ParameterConvention::Indirect_Inout:
@@ -610,7 +615,8 @@ static SILValue getAddressOfStackInit(AllocStackInst *ASI,
 /// Find the init_existential, which could be used to determine a concrete
 /// type of the \p Self.
 static SILInstruction *findInitExistential(FullApplySite AI, SILValue Self,
-                                           CanType &OpenedArchetype) {
+                                           CanType &OpenedArchetype,
+                                           SILValue &OpenedArchetypeDef) {
   if (auto *Instance = dyn_cast<AllocStackInst>(Self)) {
     // In case the Self operand is an alloc_stack where a copy_addr copies the
     // result of an open_existential_addr to this stack location.
@@ -633,12 +639,14 @@ static SILInstruction *findInitExistential(FullApplySite AI, SILValue Self,
       return nullptr;
 
     OpenedArchetype = Open->getType().getSwiftRValueType();
+    OpenedArchetypeDef = Open;
     return IE;
   }
 
   if (auto *Open = dyn_cast<OpenExistentialRefInst>(Self)) {
     if (auto *IE = dyn_cast<InitExistentialRefInst>(Open->getOperand())) {
       OpenedArchetype = Open->getType().getSwiftRValueType();
+      OpenedArchetypeDef = Open;
       return IE;
     }
     return nullptr;
@@ -650,6 +658,7 @@ static SILInstruction *findInitExistential(FullApplySite AI, SILValue Self,
       OpenedArchetype = Open->getType().getSwiftRValueType();
       while (auto Metatype = dyn_cast<MetatypeType>(OpenedArchetype))
         OpenedArchetype = Metatype.getInstanceType();
+      OpenedArchetypeDef = Open;
       return IE;
     }
     return nullptr;
@@ -664,6 +673,7 @@ SILCombiner::createApplyWithConcreteType(FullApplySite AI,
                                          SILValue NewSelf,
                                          SILValue Self,
                                          CanType ConcreteType,
+                                         SILValue ConcreteTypeDef,
                                          ProtocolConformanceRef Conformance,
                                          CanType OpenedArchetype) {
   // Create a set of arguments.
@@ -732,7 +742,7 @@ SILCombiner::createApplyWithConcreteType(FullApplySite AI,
 
 /// Derive a concrete type of self and conformance from the init_existential
 /// instruction.
-static Optional<std::pair<ProtocolConformanceRef, CanType>>
+static Optional<std::tuple<ProtocolConformanceRef, CanType, SILValue>>
 getConformanceAndConcreteType(FullApplySite AI,
                               SILInstruction *InitExistential,
                               ProtocolDecl *Protocol,
@@ -740,6 +750,7 @@ getConformanceAndConcreteType(FullApplySite AI,
                               ArrayRef<ProtocolConformanceRef> &Conformances) {
   // Try to derive the concrete type of self from the found init_existential.
   CanType ConcreteType;
+  SILValue ConcreteTypeDef;
   if (auto IE = dyn_cast<InitExistentialAddrInst>(InitExistential)) {
     Conformances = IE->getConformances();
     ConcreteType = IE->getFormalConcreteType();
@@ -762,11 +773,25 @@ getConformanceAndConcreteType(FullApplySite AI,
     return None;
   }
 
+  if (ConcreteType->isOpenedExistential()) {
+    assert(!InitExistential->getOpenedArchetypeOperands().empty() &&
+           "init_existential is supposed to have a typedef operand");
+    ConcreteTypeDef = InitExistential->getOpenedArchetypeOperands()[0].get();
+  }
+
   // Find the conformance for the protocol we're interested in.
   for (auto Conformance : Conformances) {
     auto Requirement = Conformance.getRequirement();
-    if (Requirement == Protocol || Requirement->inheritsFrom(Protocol)) {
-      return std::make_pair(Conformance, ConcreteType);
+    if (Requirement == Protocol) {
+      return std::make_tuple(Conformance, ConcreteType, ConcreteTypeDef);
+    }
+    if (Requirement->inheritsFrom(Protocol)) {
+      // If Requirement != Protocol, then the abstract conformance cannot be used
+      // as is and we need to create a proper conformance.
+      return std::make_tuple(Conformance.isAbstract()
+                                ? ProtocolConformanceRef(Protocol)
+                                : Conformance,
+                            ConcreteType, ConcreteTypeDef);
     }
   }
 
@@ -798,8 +823,9 @@ SILCombiner::propagateConcreteTypeOfInitExistential(FullApplySite AI,
   // Try to find the init_existential, which could be used to
   // determine a concrete type of the self.
   CanType OpenedArchetype;
+  SILValue OpenedArchetypeDef;
   SILInstruction *InitExistential =
-    findInitExistential(AI, Self, OpenedArchetype);
+    findInitExistential(AI, Self, OpenedArchetype, OpenedArchetypeDef);
   if (!InitExistential)
     return nullptr;
 
@@ -813,17 +839,35 @@ SILCombiner::propagateConcreteTypeOfInitExistential(FullApplySite AI,
   if (!ConformanceAndConcreteType)
     return nullptr;
 
-  auto ConcreteType = ConformanceAndConcreteType->second;
-  auto Conformance = ConformanceAndConcreteType->first;
+  ProtocolConformanceRef Conformance = std::get<0>(*ConformanceAndConcreteType);
+  CanType ConcreteType = std::get<1>(*ConformanceAndConcreteType);
+  SILValue ConcreteTypeDef = std::get<2>(*ConformanceAndConcreteType);
+
+  SILOpenedArchetypesTracker *OldOpenedArchetypesTracker =
+      Builder.getOpenedArchetypesTracker();
+
+  SILOpenedArchetypesTracker OpenedArchetypesTracker(*AI.getFunction());
+
+  if (ConcreteType->isOpenedExistential()) {
+    // Prepare a mini-mapping for opened archetypes.
+    // SILOpenedArchetypesTracker OpenedArchetypesTracker(*AI.getFunction());
+    OpenedArchetypesTracker.addOpenedArchetypeDef(ConcreteType, ConcreteTypeDef);
+    Builder.setOpenedArchetypesTracker(&OpenedArchetypesTracker);
+  }
 
   // Propagate the concrete type into the callee-operand if required.
   Propagate(ConcreteType, Conformance);
 
   // Create a new apply instruction that uses the concrete type instead
   // of the existential type.
-  return createApplyWithConcreteType(AI, NewSelf, Self,
-                                     ConcreteType, Conformance,
-                                     OpenedArchetype);
+  auto *NewAI = createApplyWithConcreteType(AI, NewSelf, Self, ConcreteType,
+                                            ConcreteTypeDef, Conformance,
+                                            OpenedArchetype);
+
+  if (ConcreteType->isOpenedExistential())
+    Builder.setOpenedArchetypesTracker(OldOpenedArchetypesTracker);
+
+  return NewAI;
 }
 
 SILInstruction *
@@ -857,15 +901,10 @@ SILCombiner::propagateConcreteTypeOfInitExistential(FullApplySite AI,
                                            ProtocolConformanceRef Conformance) {
     // Keep around the dependence on the open instruction unless we've
     // actually eliminated the use.
-    SILValue OptionalExistential;
-    if (WMI->hasOperand() && ConcreteType->isOpenedExistential())
-      OptionalExistential = WMI->getOperand();
-
     auto *NewWMI = Builder.createWitnessMethod(WMI->getLoc(),
                                                 ConcreteType,
                                                 Conformance, WMI->getMember(),
                                                 WMI->getType(),
-                                                OptionalExistential,
                                                 WMI->isVolatile());
     replaceInstUsesWith(*WMI, NewWMI);
     eraseInstFromFunction(*WMI);
@@ -984,7 +1023,7 @@ static void emitMatchingRCAdjustmentsForCall(ApplyInst *Call, SILValue OnX) {
 
   // Emit a retain for the @owned return.
   SILBuilderWithScope Builder(Call);
-  Builder.createRetainValue(Call->getLoc(), OnX);
+  Builder.createRetainValue(Call->getLoc(), OnX, Atomicity::Atomic);
 
   // Emit a release for the @owned parameter, or none for a @guaranteed
   // parameter.
@@ -996,7 +1035,7 @@ static void emitMatchingRCAdjustmentsForCall(ApplyInst *Call, SILValue OnX) {
          ParamInfo == ParameterConvention::Direct_Guaranteed);
 
   if (ParamInfo == ParameterConvention::Direct_Owned)
-    Builder.createReleaseValue(Call->getLoc(), OnX);
+    Builder.createReleaseValue(Call->getLoc(), OnX, Atomicity::Atomic);
 }
 
 static bool isCastTypeKnownToSucceed(SILType Type, SILModule &Mod) {
@@ -1050,12 +1089,14 @@ bool SILCombiner::optimizeIdentityCastComposition(ApplyInst *FInverse,
     // X might not be strong_retain/release'able. Replace it by a
     // retain/release_value on X instead.
     if (isa<StrongRetainInst>(User)) {
-      SILBuilderWithScope(User).createRetainValue(User->getLoc(), X);
+      SILBuilderWithScope(User).createRetainValue(User->getLoc(), X,
+                                                  Atomicity::Atomic);
       eraseInstFromFunction(*User);
       continue;
     }
     if (isa<StrongReleaseInst>(User)) {
-      SILBuilderWithScope(User).createReleaseValue(User->getLoc(), X);
+      SILBuilderWithScope(User).createReleaseValue(User->getLoc(), X,
+                                                   Atomicity::Atomic);
       eraseInstFromFunction(*User);
       continue;
     }
@@ -1284,4 +1325,3 @@ SILInstruction *SILCombiner::visitTryApplyInst(TryApplyInst *AI) {
 
   return nullptr;
 }
-

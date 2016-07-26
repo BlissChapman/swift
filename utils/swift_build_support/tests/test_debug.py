@@ -10,12 +10,12 @@
 
 import platform
 import unittest
-
-# StringIO import path differs across Python 2 and 3.
 try:
-    from io import StringIO
+    # py2
+    from StringIO import StringIO
 except ImportError:
-    from cStringIO import StringIO
+    # py3
+    from io import StringIO
 
 from swift_build_support import debug
 
@@ -28,18 +28,13 @@ class PrintXcodebuildVersionsTestCase(unittest.TestCase):
         self._out = StringIO()
 
     def test_outputs_xcode_version(self):
-        debug.print_xcodebuild_versions([], file=self._out)
+        debug.print_xcodebuild_versions(file=self._out)
         actual = self._out.getvalue().splitlines()
-        self.assertEqual(actual[0], '--- SDK versions ---')
-        self.assertTrue(actual[1].startswith('Xcode '))
-        self.assertTrue(actual[2].startswith('Build version '))
-
-    def test_outputs_all_sdks(self):
-        debug.print_xcodebuild_versions(
-            ['iphonesimulator', 'watchsimulator'], file=self._out)
-        actual = self._out.getvalue()
-        self.assertNotEqual(actual.find('iPhoneSimulator'), -1)
-        self.assertNotEqual(actual.find('WatchSimulator'), -1)
+        self.assertTrue(actual[0].startswith('Xcode '))
+        self.assertTrue(actual[1].startswith('Build version '))
+        self.assertEqual(actual[3], '--- SDK versions ---')
+        # You can't test beyond this because each developer's machines may have
+        # a different set of SDKs installed.
 
 
 if __name__ == '__main__':

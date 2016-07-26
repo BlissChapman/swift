@@ -6,7 +6,7 @@
 import ObjectiveC
 import Foundation
 
-func testHash<H: Hashable>(x: H) -> Int { return x.hashValue }
+func testHash<H: Hashable>(_ x: H) -> Int { return x.hashValue }
 
 func test_CBool() {
   let x: CBool = true
@@ -18,13 +18,13 @@ test_CBool()
 
 func test_ObjCBool() {
   let x = ObjCBool(true)
-  let hash = testHash(Bool(x))
+  let hash = testHash(x.boolValue)
   print("ObjCBool: hash = \(hash)")
 }
 // CHECK-NEXT: ObjCBool: hash = 1
 test_ObjCBool()
 
-func testEquatable<E: Equatable>(x: E) {}
+func testEquatable<E: Equatable>(_ x: E) {}
 
 func test_Equatable() {
   // CHECK-NEXT: Found 2.5 at index 1

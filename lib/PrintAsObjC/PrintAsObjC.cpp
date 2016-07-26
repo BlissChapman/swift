@@ -25,6 +25,7 @@
 #include "swift/Frontend/PrintingDiagnosticConsumer.h"
 #include "swift/IDE/CommentConversion.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/Basic/Module.h"
@@ -73,18 +74,33 @@ namespace {
   };
 }
 
-static Identifier getNameForObjC(const ValueDecl *VD,
-                                 CustomNamesOnly_t customNamesOnly = Normal) {
-  assert(isa<ClassDecl>(VD) || isa<ProtocolDecl>(VD)
-      || isa<EnumDecl>(VD) || isa<EnumElementDecl>(VD));
+static StringRef getNameForObjC(const ValueDecl *VD,
+                                CustomNamesOnly_t customNamesOnly = Normal) {
+  assert(isa<ClassDecl>(VD) || isa<ProtocolDecl>(VD) || isa<StructDecl>(VD) ||
+         isa<EnumDecl>(VD) || isa<EnumElementDecl>(VD));
   if (auto objc = VD->getAttrs().getAttribute<ObjCAttr>()) {
     if (auto name = objc->getName()) {
       assert(name->getNumSelectorPieces() == 1);
-      return name->getSelectorPieces().front();
+      return name->getSelectorPieces().front().str();
     }
   }
 
-  return customNamesOnly ? Identifier() : VD->getName();
+  if (customNamesOnly)
+    return StringRef();
+
+  if (auto clangDecl = dyn_cast_or_null<clang::NamedDecl>(VD->getClangDecl()))
+    if (const clang::IdentifierInfo *II = clangDecl->getIdentifier())
+      return II->getName();
+
+  return VD->getName().str();
+}
+
+/// Returns true if the given selector might be mistaken for an init method
+/// by Objective-C ARC.
+static bool isMistakableForInit(ObjCSelector selector) {
+  ArrayRef<Identifier> selectorPieces = selector.getSelectorPieces();
+  assert(!selectorPieces.empty());
+  return selectorPieces.front().str().startswith("init");
 }
 
 
@@ -96,7 +112,8 @@ class ObjCPrinter : private DeclVisitor<ObjCPrinter>,
   friend ASTVisitor;
   friend TypeVisitor;
 
-  llvm::DenseMap<std::pair<Identifier, Identifier>, std::pair<StringRef, bool>>
+  using NameAndOptional = std::pair<StringRef, bool>;
+  llvm::DenseMap<std::pair<Identifier, Identifier>, NameAndOptional>
     specialNames;
   Identifier ID_CFTypeRef;
 
@@ -175,8 +192,8 @@ private:
   }
 
   void printDocumentationComment(Decl *D) {
-    llvm::markup::MarkupContext MC;
-    auto DC = getDocComment(MC, D);
+    swift::markup::MarkupContext MC;
+    auto DC = getSingleDocComment(MC, D);
     if (DC.hasValue())
       ide::getDocumentationCommentAsDoxygen(DC.getValue(), os);
   }
@@ -187,7 +204,7 @@ private:
   void visitClassDecl(ClassDecl *CD) {
     printDocumentationComment(CD);
 
-    Identifier customName = getNameForObjC(CD, CustomNamesOnly);
+    StringRef customName = getNameForObjC(CD, CustomNamesOnly);
     if (customName.empty()) {
       llvm::SmallString<32> scratch;
       os << "SWIFT_CLASS(\"" << CD->getObjCRuntimeName(scratch) << "\")\n"
@@ -219,7 +236,7 @@ private:
   void visitProtocolDecl(ProtocolDecl *PD) {
     printDocumentationComment(PD);
 
-    Identifier customName = getNameForObjC(PD, CustomNamesOnly);
+    StringRef customName = getNameForObjC(PD, CustomNamesOnly);
     if (customName.empty()) {
       llvm::SmallString<32> scratch;
       os << "SWIFT_PROTOCOL(\"" << PD->getObjCRuntimeName(scratch) << "\")\n"
@@ -240,7 +257,7 @@ private:
   void visitEnumDecl(EnumDecl *ED) {
     printDocumentationComment(ED);
     os << "typedef ";
-    Identifier customName = getNameForObjC(ED, CustomNamesOnly);
+    StringRef customName = getNameForObjC(ED, CustomNamesOnly);
     if (customName.empty()) {
       os << "SWIFT_ENUM(";
     } else {
@@ -260,7 +277,7 @@ private:
       // Print the cases as the concatenation of the enum name with the case
       // name.
       os << "  ";
-      Identifier customEltName = getNameForObjC(Elt, CustomNamesOnly);
+      StringRef customEltName = getNameForObjC(Elt, CustomNamesOnly);
       if (customEltName.empty()) {
         if (customName.empty()) {
           os << ED->getName();
@@ -430,7 +447,7 @@ private:
       // parameter, print it.
       if (errorConvention && i == errorConvention->getErrorParameterIndex()) {
         os << piece << ":(";
-        print(errorConvention->getErrorParameterType(), OTK_None);
+        print(errorConvention->getErrorParameterType(), None);
         os << ")error";
         continue;
       }
@@ -466,6 +483,8 @@ private:
           !isa<ProtocolDecl>(ctor->getDeclContext())) {
         os << " OBJC_DESIGNATED_INITIALIZER";
       }
+    } else if (isMistakableForInit(AFD->getObjCSelector())) {
+      os << " SWIFT_METHOD_FAMILY(none)";
     }
 
     os << ";\n";
@@ -567,15 +586,15 @@ private:
     printDocumentationComment(VD);
 
     if (VD->isStatic()) {
-      // Objective-C doesn't have class properties. Just print the accessors.
-      printAbstractFunctionAsMethod(VD->getGetter(), true);
-      if (auto setter = VD->getSetter())
-        printAbstractFunctionAsMethod(setter, true);
-      return;
+      // Older Clangs don't support class properties.
+      os << "SWIFT_CLASS_PROPERTY(";
     }
 
     // For now, never promise atomicity.
     os << "@property (nonatomic";
+
+    if (VD->isStatic())
+      os << ", class";
 
     ASTContext &ctx = M.getASTContext();
     bool isSettable = VD->isSettable(nullptr);
@@ -592,7 +611,8 @@ private:
     if (auto weakTy = ty->getAs<WeakStorageType>()) {
       auto innerTy = weakTy->getReferentType()->getAnyOptionalObjectType();
       auto innerClass = innerTy->getClassOrBoundGenericClass();
-      if ((innerClass && !innerClass->isForeign()) ||
+      if ((innerClass &&
+           innerClass->getForeignClassKind()!=ClassDecl::ForeignKind::CFType) ||
           (innerTy->isObjCExistentialType() && !isCFTypeRef(innerTy))) {
         os << ", weak";
       }
@@ -610,7 +630,9 @@ private:
         if (nominal == ctx.getArrayDecl() ||
             nominal == ctx.getDictionaryDecl() ||
             nominal == ctx.getSetDecl() ||
-            nominal == ctx.getStringDecl()) {
+            nominal == ctx.getStringDecl() ||
+            (!getKnownTypeInfo(nominal) && getObjCBridgedClass(nominal))) {
+          // We fast-path the most common cases in the condition above.
           os << ", copy";
         } else if (nominal == ctx.getUnmanagedDecl()) {
           os << ", unsafe_unretained";
@@ -632,7 +654,8 @@ private:
           break;
         }
       } else if ((dyn_cast_or_null<ClassDecl>(nominal) &&
-                  !cast<ClassDecl>(nominal)->isForeign()) ||
+                  cast<ClassDecl>(nominal)->getForeignClassKind() !=
+                    ClassDecl::ForeignKind::CFType) ||
                  (copyTy->isObjCExistentialType() && !isCFTypeRef(copyTy))) {
         os << ", strong";
       }
@@ -644,10 +667,11 @@ private:
     // Handle custom accessor names.
     llvm::SmallString<64> buffer;
     if (hasReservedName ||
-        VD->getObjCGetterSelector() != ObjCSelector(ctx, 0, { objCName })) {
+        VD->getObjCGetterSelector() !=
+          VarDecl::getDefaultObjCGetterSelector(ctx, objCName)) {
       os << ", getter=" << VD->getObjCGetterSelector().getString(buffer);
     }
-    if (VD->isSettable(nullptr)) {
+    if (isSettable) {
       if (hasReservedName ||
           VD->getObjCSetterSelector() !=
             VarDecl::getDefaultObjCSetterSelector(ctx, objCName)) {
@@ -675,7 +699,23 @@ private:
       print(ty, OTK_None, objCName);
     }
 
-    os << ";\n";
+    os << ";";
+    if (VD->isStatic()) {
+      os << ")\n";
+      // Older Clangs don't support class properties, so print the accessors as
+      // well. This is harmless.
+      printAbstractFunctionAsMethod(VD->getGetter(), true);
+      if (isSettable) {
+        assert(VD->getSetter() && "settable ObjC property missing setter decl");
+        printAbstractFunctionAsMethod(VD->getSetter(), true);
+      }
+    } else {
+      os << "\n";
+      if (isMistakableForInit(VD->getObjCGetterSelector()))
+        printAbstractFunctionAsMethod(VD->getGetter(), false);
+      if (isSettable && isMistakableForInit(VD->getObjCSetterSelector()))
+        printAbstractFunctionAsMethod(VD->getSetter(), false);
+    }
   }
 
   void visitSubscriptDecl(SubscriptDecl *SD) {
@@ -764,38 +804,47 @@ private:
     return true;
   }
 
-  /// If the nominal type is bridged to Objective-C (via a conformance
-  /// to _ObjectiveCBridgeable), print the bridged type.
-  bool printIfObjCBridgeable(const NominalTypeDecl *nominal,
-                             ArrayRef<Type> typeArgs,
-                             Optional<OptionalTypeKind> optionalKind) {
+  /// If \p nominal is bridged to an Objective-C class (via a conformance to
+  /// _ObjectiveCBridgeable), return that class.
+  ///
+  /// Otherwise returns null.
+  const ClassDecl *getObjCBridgedClass(const NominalTypeDecl *nominal) {
+    // Print imported bridgeable decls as their unbridged type.
+    if (nominal->hasClangNode())
+      return nullptr;
+
     auto &ctx = nominal->getASTContext();
 
     // Dig out the ObjectiveCBridgeable protocol.
     auto proto = ctx.getProtocol(KnownProtocolKind::ObjectiveCBridgeable);
-    if (!proto) return false;
+    if (!proto) return nullptr;
 
     // Determine whether this nominal type is _ObjectiveCBridgeable.
     SmallVector<ProtocolConformance *, 2> conformances;
     if (!nominal->lookupConformance(&M, proto, conformances))
-      return false;
+      return nullptr;
 
     // Dig out the Objective-C type.
     auto conformance = conformances.front();
     Type objcType = ProtocolConformance::getTypeWitnessByName(
                       nominal->getDeclaredType(),
                       conformance,
-                      ctx.getIdentifier("_ObjectiveCType"),
+                      ctx.Id_ObjectiveCType,
                       nullptr);
-    if (!objcType) return false;
+    if (!objcType) return nullptr;
 
     // Dig out the Objective-C class.
-    auto classDecl = objcType->getClassOrBoundGenericClass();
-    if (!classDecl) return false;
+    return objcType->getClassOrBoundGenericClass();
+  }
 
-    // Determine the Objective-C name of the class.
-    SmallString<32> objcNameScratch;
-    StringRef objcName = classDecl->getObjCRuntimeName(objcNameScratch);
+  /// If the nominal type is bridged to Objective-C (via a conformance
+  /// to _ObjectiveCBridgeable), print the bridged type.
+  void printObjCBridgeableType(const NominalTypeDecl *swiftNominal,
+                               const ClassDecl *objcClass,
+                               ArrayRef<Type> typeArgs,
+                               Optional<OptionalTypeKind> optionalKind) {
+    auto &ctx = swiftNominal->getASTContext();
+    assert(objcClass);
 
     // Detect when the type arguments correspond to the unspecialized
     // type, and clear them out. There is some type-specific hackery
@@ -805,15 +854,17 @@ private:
     //   NSDictionary<NSObject *, id> --> NSDictionary
     //   NSSet<id> --> NSSet
     if (!typeArgs.empty() &&
-        (!hasGenericObjCType(classDecl) ||
-         (objcName == "NSArray" && typeArgs[0]->isAnyObject()) ||
-         (objcName == "NSDictionary" && isNSObject(ctx, typeArgs[0]) &&
-          typeArgs[1]->isAnyObject()) ||
-         (objcName == "NSSet" && isNSObject(ctx, typeArgs[0]))))
+        (!hasGenericObjCType(objcClass) ||
+         (swiftNominal == ctx.getArrayDecl() && typeArgs[0]->isAnyObject()) ||
+         (swiftNominal == ctx.getDictionaryDecl() &&
+          isNSObject(ctx, typeArgs[0]) && typeArgs[1]->isAnyObject()) ||
+         (swiftNominal == ctx.getSetDecl() && isNSObject(ctx, typeArgs[0])))) {
       typeArgs = {};
+    }
 
     // Print the class type.
-    os << objcName;
+    SmallString<32> objcNameScratch;
+    os << objcClass->getObjCRuntimeName(objcNameScratch);
 
     // Print the type arguments, if present.
     if (!typeArgs.empty()) {
@@ -828,17 +879,29 @@ private:
 
     os << " *";
     printNullability(optionalKind);
-    return true;
   }
 
-  /// If "name" is one of the standard library types used to map in Clang
-  /// primitives and basic types, print out the appropriate spelling and
-  /// return true.
+  /// If the nominal type is bridged to Objective-C (via a conformance to
+  /// _ObjectiveCBridgeable), print the bridged type. Otherwise, nothing is
+  /// printed.
   ///
-  /// This handles typealiases and structs provided by the standard library
-  /// for interfacing with C and Objective-C.
-  bool printIfKnownTypeName(Identifier moduleName, Identifier name,
-                            Optional<OptionalTypeKind> optionalKind) {
+  /// \returns true iff printed something.
+  bool printIfObjCBridgeable(const NominalTypeDecl *nominal,
+                             ArrayRef<Type> typeArgs,
+                             Optional<OptionalTypeKind> optionalKind) {
+    if (const ClassDecl *objcClass = getObjCBridgedClass(nominal)) {
+      printObjCBridgeableType(nominal, objcClass, typeArgs, optionalKind);
+      return true;
+    }
+    return false;
+  }
+
+  /// If \p typeDecl is one of the standard library types used to map in Clang
+  /// primitives and basic types, return the address of the info in
+  /// \c specialNames containing the Clang name and whether it can be optional.
+  ///
+  /// Returns null if the name is not one of these known types.
+  const NameAndOptional *getKnownTypeInfo(const TypeDecl *typeDecl) {
     if (specialNames.empty()) {
       ASTContext &ctx = M.getASTContext();
 #define MAP(SWIFT_NAME, CLANG_REPR, NEEDS_NULLABILITY)                       \
@@ -905,7 +968,7 @@ private:
         = { "CGFloat", false };
 
       // Use typedefs we set up for SIMD vector types.
-#define MAP_SIMD_TYPE(BASENAME, __) \
+#define MAP_SIMD_TYPE(BASENAME, _, __) \
       specialNames[{ctx.Id_simd, ctx.getIdentifier(#BASENAME "2")}] \
         = { "swift_" #BASENAME "2", false };                        \
       specialNames[{ctx.Id_simd, ctx.getIdentifier(#BASENAME "3")}] \
@@ -918,18 +981,31 @@ private:
                     "SIMD elements is changed");
     }
 
+    Identifier moduleName = typeDecl->getModuleContext()->getName();
+    Identifier name = typeDecl->getName();
     auto iter = specialNames.find({moduleName, name});
     if (iter == specialNames.end())
-      return false;
-
-    os << iter->second.first;
-    if (iter->second.second) {
-      // FIXME: Selectors and pointers should be nullable.
-      printNullability(OptionalTypeKind::OTK_ImplicitlyUnwrappedOptional);
-    }
-    return true;
+      return nullptr;
+    return &iter->second;
   }
 
+  /// If \p typeDecl is one of the standard library types used to map in Clang
+  /// primitives and basic types, print out the appropriate spelling and
+  /// return true.
+  ///
+  /// This handles typealiases and structs provided by the standard library
+  /// for interfacing with C and Objective-C.
+  bool printIfKnownSimpleType(const TypeDecl *typeDecl,
+                              Optional<OptionalTypeKind> optionalKind) {
+    auto *knownTypeInfo = getKnownTypeInfo(typeDecl);
+    if (!knownTypeInfo)
+      return false;
+    os << knownTypeInfo->first;
+    if (knownTypeInfo->second)
+      printNullability(optionalKind);
+    return true;
+  }
+  
   void visitType(TypeBase *Ty, Optional<OptionalTypeKind> optionalKind) {
     assert(Ty->getDesugaredType() == Ty && "unhandled sugared type");
     os << "/* ";
@@ -937,40 +1013,26 @@ private:
     os << " */";
   }
 
-  bool isClangObjectPointerType(const clang::TypeDecl *clangTypeDecl) const {
-    ASTContext &ctx = M.getASTContext();
-    auto &clangASTContext = ctx.getClangModuleLoader()->getClangASTContext();
-    clang::QualType clangTy = clangASTContext.getTypeDeclType(clangTypeDecl);
-    return clangTy->isObjCRetainableType();
-  }
-
   bool isClangPointerType(const clang::TypeDecl *clangTypeDecl) const {
     ASTContext &ctx = M.getASTContext();
     auto &clangASTContext = ctx.getClangModuleLoader()->getClangASTContext();
     clang::QualType clangTy = clangASTContext.getTypeDeclType(clangTypeDecl);
-    return clangTy->isPointerType();
+    return clangTy->isPointerType() || clangTy->isBlockPointerType() ||
+      clangTy->isObjCObjectPointerType();
   }
 
   void visitNameAliasType(NameAliasType *aliasTy,
                           Optional<OptionalTypeKind> optionalKind) {
     const TypeAliasDecl *alias = aliasTy->getDecl();
-    if (printIfKnownTypeName(alias->getModuleContext()->getName(),
-                             alias->getName(),
-                             optionalKind))
+    if (printIfKnownSimpleType(alias, optionalKind))
       return;
 
     if (alias->hasClangNode()) {
       auto *clangTypeDecl = cast<clang::TypeDecl>(alias->getClangDecl());
       os << clangTypeDecl->getName();
 
-      // Print proper nullability for CF types, but _Null_unspecified for
-      // all other non-object Clang pointer types.
-      if (aliasTy->hasReferenceSemantics() ||
-          isClangObjectPointerType(clangTypeDecl)) {
+      if (isClangPointerType(clangTypeDecl))
         printNullability(optionalKind);
-      } else if (isClangPointerType(clangTypeDecl)) {
-        printNullability(OptionalTypeKind::OTK_ImplicitlyUnwrappedOptional);
-      }
       return;
     }
 
@@ -1008,8 +1070,7 @@ private:
     const StructDecl *SD = ST->getStructOrBoundGenericStruct();
 
     // Handle known type names.
-    if (printIfKnownTypeName(SD->getModuleContext()->getName(), SD->getName(),
-                             optionalKind))
+    if (printIfKnownSimpleType(SD, optionalKind))
       return;
 
     // Handle bridged types.
@@ -1017,7 +1078,12 @@ private:
       return;
 
     maybePrintTagKeyword(SD);
-    os << SD->getName();
+    os << getNameForObjC(SD);
+
+    // Handle swift_newtype applied to a pointer type.
+    if (auto *clangDecl = cast_or_null<clang::TypeDecl>(SD->getClangDecl()))
+      if (isClangPointerType(clangDecl))
+        printNullability(optionalKind);
   }
 
   /// Print a collection element type using Objective-C generics syntax.
@@ -1026,12 +1092,22 @@ private:
   void printCollectionElement(Type ty) {
     ASTContext &ctx = M.getASTContext();
 
+    auto isSwiftNewtype = [&ctx](const StructDecl *SD) -> bool {
+      if (!SD)
+        return false;
+      auto *clangDecl = SD->getClangDecl();
+      if (!clangDecl)
+        return false;
+      return clangDecl->hasAttr<clang::SwiftNewtypeAttr>();
+    };
+
     // Use the type as bridged to Objective-C unless the element type is itself
-    // a collection.
+    // an imported type or a collection.
     const StructDecl *SD = ty->getStructOrBoundGenericStruct();
     if (SD != ctx.getArrayDecl() &&
         SD != ctx.getDictionaryDecl() &&
-        SD != ctx.getSetDecl()) {
+        SD != ctx.getSetDecl() &&
+        !isSwiftNewtype(SD)) {
       ty = *ctx.getBridgedToObjC(&M, ty, /*resolver*/nullptr);
     }
 
@@ -1074,8 +1150,7 @@ private:
     if (isConst)
       os << " const";
     os << " *";
-    // FIXME: Pointer types should be nullable.
-    printNullability(OptionalTypeKind::OTK_ImplicitlyUnwrappedOptional);
+    printNullability(optionalKind);
     return true;
   }
 
@@ -1090,6 +1165,34 @@ private:
       return;
 
     visitBoundGenericType(BGT, optionalKind);
+  }
+  
+  void visitBoundGenericClassType(BoundGenericClassType *BGT,
+                                  Optional<OptionalTypeKind> optionalKind) {
+    // Only handle imported ObjC generics.
+    auto CD = BGT->getClassOrBoundGenericClass();
+    if (!CD->isObjC())
+      return visitType(BGT, optionalKind);
+    
+    assert(CD->getClangDecl() && "objc generic class w/o clang node?!");
+    auto clangDecl = cast<clang::NamedDecl>(CD->getClangDecl());
+    if (isa<clang::ObjCInterfaceDecl>(clangDecl)) {
+      os << clangDecl->getName();
+    } else {
+      maybePrintTagKeyword(CD);
+      os << clangDecl->getName();
+    }
+    os << '<';
+    print(BGT->getGenericArgs()[0], None);
+    for (auto arg : BGT->getGenericArgs().slice(1)) {
+      os << ", ";
+      print(arg, None);
+    }
+    os << '>';
+    if (isa<clang::ObjCInterfaceDecl>(clangDecl)) {
+      os << " *";
+    }
+    printNullability(optionalKind);
   }
 
   void visitBoundGenericType(BoundGenericType *BGT,
@@ -1517,8 +1620,10 @@ public:
   }
 
   bool forwardDeclare(const ClassDecl *CD) {
-    if (!CD->isObjC() || CD->isForeign())
+    if (!CD->isObjC() ||
+        CD->getForeignClassKind() == ClassDecl::ForeignKind::CFType) {
       return false;
+    }
     forwardDeclare(CD, [&]{ os << "@class " << getNameForObjC(CD) << ";\n"; });
     return true;
   }
@@ -1684,7 +1789,7 @@ public:
     ASTContext &ctx = M.getASTContext();
 
     auto protos = ED->getAllProtocols();
-    auto errorTypeProto = ctx.getProtocol(KnownProtocolKind::ErrorProtocol);
+    auto errorTypeProto = ctx.getProtocol(KnownProtocolKind::Error);
     if (std::find(protos.begin(), protos.end(), errorTypeProto) !=
         protos.end()) {
       bool hasDomainCase = std::any_of(ED->getAllElements().begin(),
@@ -1724,12 +1829,12 @@ public:
            "typedef uint_least16_t char16_t;\n"
            "typedef uint_least32_t char32_t;\n"
            "# endif\n"
-#define MAP_SIMD_TYPE(C_TYPE, _) \
-           "typedef " #C_TYPE " swift_" #C_TYPE "2"       \
+#define MAP_SIMD_TYPE(C_TYPE, SCALAR_TYPE, _) \
+           "typedef " #SCALAR_TYPE " swift_" #C_TYPE "2"       \
            "  __attribute__((__ext_vector_type__(2)));\n" \
-           "typedef " #C_TYPE " swift_" #C_TYPE "3"       \
+           "typedef " #SCALAR_TYPE " swift_" #C_TYPE "3"       \
            "  __attribute__((__ext_vector_type__(3)));\n" \
-           "typedef " #C_TYPE " swift_" #C_TYPE "4"       \
+           "typedef " #SCALAR_TYPE " swift_" #C_TYPE "4"       \
            "  __attribute__((__ext_vector_type__(4)));\n"
 #include "swift/ClangImporter/SIMDMappedTypes.def"
            "#endif\n"
@@ -1741,6 +1846,13 @@ public:
            "\n"
            "#if !defined(SWIFT_METATYPE)\n"
            "# define SWIFT_METATYPE(X) Class\n"
+           "#endif\n"
+           "#if !defined(SWIFT_CLASS_PROPERTY)\n"
+           "# if __has_feature(objc_class_property)\n"
+           "#  define SWIFT_CLASS_PROPERTY(...) __VA_ARGS__\n"
+           "# else\n"
+           "#  define SWIFT_CLASS_PROPERTY(...)\n"
+           "# endif\n"
            "#endif\n"
            "\n"
            "#if defined(__has_attribute) && "
@@ -1756,6 +1868,13 @@ public:
              "__attribute__((swift_name(X)))\n"
            "#else\n"
            "# define SWIFT_COMPILE_NAME(X)\n"
+           "#endif\n"
+           "#if defined(__has_attribute) && "
+             "__has_attribute(objc_method_family)\n"
+           "# define SWIFT_METHOD_FAMILY(X) "
+             "__attribute__((objc_method_family(X)))\n"
+           "#else\n"
+           "# define SWIFT_METHOD_FAMILY(X)\n"
            "#endif\n"
            "#if !defined(SWIFT_CLASS_EXTRA)\n"
            "# define SWIFT_CLASS_EXTRA\n"

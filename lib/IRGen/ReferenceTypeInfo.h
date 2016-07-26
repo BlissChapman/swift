@@ -33,17 +33,19 @@ class ReferenceTypeInfo : public LoadableTypeInfo {
 protected:
   // FIXME: Get spare bits for pointers from a TargetInfo-like structure.
   ReferenceTypeInfo(llvm::Type *type, Size size, SpareBitVector spareBits,
-                    Alignment align)
-    : LoadableTypeInfo(type, size, spareBits, align, IsNotPOD,
+                    Alignment align, IsPOD_t pod = IsNotPOD)
+    : LoadableTypeInfo(type, size, spareBits, align, pod,
                        IsFixedSize, STIK_Reference)
   {}
 
 public:
   /// Strongly retains a value.
-  virtual void strongRetain(IRGenFunction &IGF, Explosion &in) const = 0;
-  
+  virtual void strongRetain(IRGenFunction &IGF, Explosion &in,
+                            Atomicity atomicity) const = 0;
+
   /// Strongly releases a value.
-  virtual void strongRelease(IRGenFunction &IGF, Explosion &in) const = 0;
+  virtual void strongRelease(IRGenFunction &IGF, Explosion &in,
+                             Atomicity atomicity) const = 0;
 
   /// Strongly retains a value that has come from a safe [unowned] reference.
   /// This operation is not supported for all reference types.

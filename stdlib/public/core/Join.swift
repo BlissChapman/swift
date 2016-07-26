@@ -19,25 +19,23 @@ internal enum _JoinIteratorState {
 
 /// An iterator that presents the elements of the sequences traversed
 /// by `Base`, concatenated using a given separator.
-public struct JoinedIterator<
-  Base : IteratorProtocol where Base.Element : Sequence
-> : IteratorProtocol {
+public struct JoinedIterator<Base : IteratorProtocol> : IteratorProtocol
+  where Base.Element : Sequence {
 
   /// Creates an iterator that presents the elements of the sequences
   /// traversed by `base`, concatenated using `separator`.
   ///
   /// - Complexity: O(`separator.count`).
-  public init<
-    Separator : Sequence
-    where
-    Separator.Iterator.Element == Base.Element.Iterator.Element
-  >(base: Base, separator: Separator) {
+  public init<Separator : Sequence>(base: Base, separator: Separator)
+    where Separator.Iterator.Element == Base.Element.Iterator.Element {
     self._base = base
     self._separatorData = ContiguousArray(separator)
   }
 
-  /// Advance to the next element and return it, or `nil` if no next
-  /// element exists.
+  /// Advances to the next element and returns it, or `nil` if no next element
+  /// exists.
+  ///
+  /// Once `nil` has been returned, all subsequent calls return `nil`.
   public mutating func next() -> Base.Element.Iterator.Element? {
     repeat {
       switch _state {
@@ -90,19 +88,15 @@ public struct JoinedIterator<
 
 /// A sequence that presents the elements of the `Base` sequences
 /// concatenated using a given separator.
-public struct JoinedSequence<
-  Base : Sequence where Base.Iterator.Element : Sequence
-> : Sequence {
+public struct JoinedSequence<Base : Sequence> : Sequence
+  where Base.Iterator.Element : Sequence {
 
   /// Creates a sequence that presents the elements of `base` sequences
   /// concatenated using `separator`.
   ///
   /// - Complexity: O(`separator.count`).
-  public init<
-    Separator : Sequence
-    where
-    Separator.Iterator.Element == Base.Iterator.Element.Iterator.Element
-  >(base: Base, separator: Separator) {
+  public init<Separator : Sequence>(base: Base, separator: Separator)
+    where Separator.Iterator.Element == Base.Iterator.Element.Iterator.Element {
     self._base = base
     self._separator = ContiguousArray(separator)
   }
@@ -116,8 +110,8 @@ public struct JoinedSequence<
       separator: _separator)
   }
 
-  public func _copyToNativeArrayBuffer()
-    -> _ContiguousArrayBuffer<Base.Iterator.Element.Iterator.Element> {
+  public func _copyToContiguousArray()
+    -> ContiguousArray<Base.Iterator.Element.Iterator.Element> {
     var result = ContiguousArray<Iterator.Element>()
     let separatorSize: Int = numericCast(_separator.count)
 
@@ -138,7 +132,7 @@ public struct JoinedSequence<
       for x in _base {
         result.append(contentsOf: x)
       }
-      return result._buffer
+      return result
     }
 
     var iter = _base.makeIterator()
@@ -150,7 +144,7 @@ public struct JoinedSequence<
       }
     }
 
-    return result._buffer
+    return result
   }
 
   internal var _base: Base
@@ -159,41 +153,47 @@ public struct JoinedSequence<
 }
 
 extension Sequence where Iterator.Element : Sequence {
-  /// Returns a view, whose elements are the result of interposing a given
-  /// `separator` between the elements of the sequence `self`.
+  /// Returns the concatenated elements of this sequence of sequences,
+  /// inserting the given separator between each element.
   ///
-  /// For example,
-  /// `[[1, 2, 3], [4, 5, 6], [7, 8, 9]].joined(separator: [-1, -2])`
-  /// yields `[1, 2, 3, -1, -2, 4, 5, 6, -1, -2, 7, 8, 9]`.
-  @warn_unused_result
-  public func joined<
-    Separator : Sequence
-    where
-    Separator.Iterator.Element == Iterator.Element.Iterator.Element
-  >(separator separator: Separator) -> JoinedSequence<Self> {
+  /// This example shows how an array of `[Int]` instances can be joined, using
+  /// another `[Int]` instance as the separator:
+  ///
+  ///     let nestedNumbers = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+  ///     let joined = nestedNumbers.joined(separator: [-1, -2])
+  ///     print(Array(joined))
+  ///     // Prints "[1, 2, 3, -1, -2, 4, 5, 6, -1, -2, 7, 8, 9]"
+  ///
+  /// - Parameter separator: A sequence to insert between each of this
+  ///   sequence's elements.
+  /// - Returns: The joined sequence of elements.
+  ///
+  /// - SeeAlso: `flatten()`
+  public func joined<Separator : Sequence>(
+    separator: Separator
+  ) -> JoinedSequence<Self>
+    where Separator.Iterator.Element == Iterator.Element.Iterator.Element {
     return JoinedSequence(base: self, separator: separator)
   }
 }
 
 @available(*, unavailable, renamed: "JoinedIterator")
-public struct JoinGenerator<
-  Base : IteratorProtocol where Base.Element : Sequence
-> {}
+public struct JoinGenerator<Base : IteratorProtocol>
+  where Base.Element : Sequence {}
 
 extension JoinedSequence {
-  @available(*, unavailable, renamed: "iterator")
+  @available(*, unavailable, renamed: "makeIterator()")
   public func generate() -> JoinedIterator<Base.Iterator> {
-    fatalError("unavailable function can't be called")
+    Builtin.unreachable()
   }
 }
 
 extension Sequence where Iterator.Element : Sequence {
-  @available(*, unavailable, renamed: "joined")
-  public func joinWithSeparator<
-    Separator : Sequence
-    where
-    Separator.Iterator.Element == Iterator.Element.Iterator.Element
-  >(separator: Separator) -> JoinedSequence<Self> {
-    fatalError("unavailable function can't be called")
+  @available(*, unavailable, renamed: "joined(separator:)")
+  public func joinWithSeparator<Separator : Sequence>(
+    _ separator: Separator
+  ) -> JoinedSequence<Self>
+    where Separator.Iterator.Element == Iterator.Element.Iterator.Element {
+    Builtin.unreachable()
   }
 }

@@ -1,7 +1,4 @@
-// RUN: rm -rf %t
-// RUN: mkdir -p %t
-// RUN: %target-build-swift %s -o %t/a.out
-// RUN: %target-run %t/a.out
+// RUN: %target-run-simple-swift
 // REQUIRES: executable_test
 
 //
@@ -10,15 +7,10 @@
 
 import StdlibUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-import SwiftPrivate
 #if _runtime(_ObjC)
-import ObjectiveC
 import Foundation
-import StdlibUnittestFoundationExtras
 #endif
+
 
 var StringTests = TestSuite("StringTests")
 
@@ -143,7 +135,7 @@ let comparisonTests = [
 ]
 
 func checkStringComparison(
-  expected: ExpectedComparisonResult,
+  _ expected: ExpectedComparisonResult,
   _ lhs: String, _ rhs: String, _ stackTrace: SourceLocStack
 ) {
   // String / String
@@ -191,7 +183,7 @@ for test in comparisonTests {
 }
 
 func checkCharacterComparison(
-  expected: ExpectedComparisonResult,
+  _ expected: ExpectedComparisonResult,
   _ lhs: Character, _ rhs: Character, _ stackTrace: SourceLocStack
 ) {
   // Character / Character
@@ -225,13 +217,15 @@ for test in comparisonTests {
 }
 
 func checkHasPrefixHasSuffix(
-  lhs: String, _ rhs: String, _ stackTrace: SourceLocStack
+  _ lhs: String, _ rhs: String, _ stackTrace: SourceLocStack
 ) {
 #if _runtime(_ObjC)
-  if lhs == "" {
+  if rhs == "" {
+    expectTrue(lhs.hasPrefix(rhs), stackTrace: stackTrace)
+    expectTrue(lhs.hasSuffix(rhs), stackTrace: stackTrace)
     return
   }
-  if rhs == "" {
+  if lhs == "" {
     expectFalse(lhs.hasPrefix(rhs), stackTrace: stackTrace)
     expectFalse(lhs.hasSuffix(rhs), stackTrace: stackTrace)
     return
@@ -248,10 +242,10 @@ func checkHasPrefixHasSuffix(
       Array(String($0).unicodeScalars)
     }
   let expectHasPrefix = lhsNFDGraphemeClusters.starts(
-    with: rhsNFDGraphemeClusters, isEquivalent: (==))
-  let expectHasSuffix =
-    lhsNFDGraphemeClusters.lazy.reversed().starts(
-      with: rhsNFDGraphemeClusters.lazy.reversed(), isEquivalent: (==))
+    with: rhsNFDGraphemeClusters, by: (==))
+
+  let expectHasSuffix = lhsNFDGraphemeClusters.lazy.reversed()
+    .starts(with: rhsNFDGraphemeClusters.lazy.reversed(), by: (==))
 
   expectEqual(expectHasPrefix, lhs.hasPrefix(rhs), stackTrace: stackTrace)
   expectEqual(
@@ -273,7 +267,6 @@ StringTests.test("hasPrefix,hasSuffix")
 }
 
 StringTests.test("Failures{hasPrefix,hasSuffix}-CF")
-  .xfail(.custom({ true }, reason: "rdar://problem/19034601"))
   .skip(.nativeRuntime(
     "String.has{Prefix,Suffix} defined when _runtime(_ObjC)"))
   .code {
@@ -318,48 +311,52 @@ StringTests.test("CompareStringsWithUnpairedSurrogates")
   let acceptor = "\u{1f601}\u{1f602}\u{1f603}"
 
   expectEqual("\u{fffd}\u{1f602}\u{fffd}",
-    acceptor[donor.startIndex.advanced(by: 1)..<donor.startIndex.advanced(by: 5)])
+    acceptor[
+      donor.index(donor.startIndex, offsetBy: 1) ..<
+      donor.index(donor.startIndex, offsetBy: 5)
+    ]
+  )
 }
 
 var CStringTests = TestSuite("CStringTests")
 
-func getNullCString() -> UnsafeMutablePointer<CChar> {
+func getNullCString() -> UnsafeMutablePointer<CChar>? {
   return nil
 }
 
 func getASCIICString() -> (UnsafeMutablePointer<CChar>, dealloc: () -> ()) {
-  let up = UnsafeMutablePointer<CChar>(allocatingCapacity: 100)
+  let up = UnsafeMutablePointer<CChar>.allocate(capacity: 100)
   up[0] = 0x61
   up[1] = 0x62
   up[2] = 0
-  return (up, { up.deallocateCapacity(100) })
+  return (up, { up.deallocate(capacity: 100) })
 }
 
 func getNonASCIICString() -> (UnsafeMutablePointer<CChar>, dealloc: () -> ()) {
-  let up = UnsafeMutablePointer<UInt8>(allocatingCapacity: 100)
+  let up = UnsafeMutablePointer<UInt8>.allocate(capacity: 100)
   up[0] = 0xd0
   up[1] = 0xb0
   up[2] = 0xd0
   up[3] = 0xb1
   up[4] = 0
-  return (UnsafeMutablePointer(up), { up.deallocateCapacity(100) })
+  return (UnsafeMutablePointer(up), { up.deallocate(capacity: 100) })
 }
 
 func getIllFormedUTF8String1(
 ) -> (UnsafeMutablePointer<CChar>, dealloc: () -> ()) {
-  let up = UnsafeMutablePointer<UInt8>(allocatingCapacity: 100)
+  let up = UnsafeMutablePointer<UInt8>.allocate(capacity: 100)
   up[0] = 0x41
   up[1] = 0xed
   up[2] = 0xa0
   up[3] = 0x80
   up[4] = 0x41
   up[5] = 0
-  return (UnsafeMutablePointer(up), { up.deallocateCapacity(100) })
+  return (UnsafeMutablePointer(up), { up.deallocate(capacity: 100) })
 }
 
 func getIllFormedUTF8String2(
 ) -> (UnsafeMutablePointer<CChar>, dealloc: () -> ()) {
-  let up = UnsafeMutablePointer<UInt8>(allocatingCapacity: 100)
+  let up = UnsafeMutablePointer<UInt8>.allocate(capacity: 100)
   up[0] = 0x41
   up[0] = 0x41
   up[1] = 0xed
@@ -367,11 +364,52 @@ func getIllFormedUTF8String2(
   up[3] = 0x81
   up[4] = 0x41
   up[5] = 0
-  return (UnsafeMutablePointer(up), { up.deallocateCapacity(100) })
+  return (UnsafeMutablePointer(up), { up.deallocate(capacity: 100) })
 }
 
-func asCCharArray(a: [UInt8]) -> [CChar] {
+func asCCharArray(_ a: [UInt8]) -> [CChar] {
   return a.map { CChar(bitPattern: $0) }
+}
+
+func getCStringLength(_ cString: UnsafePointer<CChar>) -> Int {
+  var length = 0
+  while cString[length] != 0 {
+    length += 1
+  }
+  return length
+}
+
+func bindAsUTF8(_ cString: UnsafePointer<CChar>) -> UnsafePointer<UInt8> {
+  return UnsafeRawPointer(cString).bindMemory(to: UInt8.self,
+    capacity: getCStringLength(cString))
+}
+
+func expectEqualCString(_ lhs: UnsafePointer<CChar>,
+  _ rhs: UnsafePointer<CChar>) {
+
+  var index = 0
+  while lhs[index] != 0 {
+    expectEqual(lhs[index], rhs[index])
+    index += 1
+  }
+  expectEqual(0, rhs[index])
+}
+
+func expectEqualCString(_ lhs: UnsafePointer<CChar>,
+  _ rhs: ContiguousArray<CChar>) {
+  rhs.withUnsafeBufferPointer {
+    expectEqualCString(lhs, $0.baseAddress!)
+  }
+}
+
+func expectEqualCString(_ lhs: UnsafePointer<CChar>,
+  _ rhs: ContiguousArray<UInt8>) {
+  rhs.withUnsafeBufferPointer {
+    $0.baseAddress!.withMemoryRebound(
+      to: CChar.self, capacity: rhs.count) {
+      expectEqualCString(lhs, $0)
+    }
+  }
 }
 
 CStringTests.test("String.init(validatingUTF8:)") {
@@ -397,18 +435,24 @@ CStringTests.test("String(cString:)") {
     let (s, dealloc) = getASCIICString()
     let result = String(cString: s)
     expectEqual("ab", result)
+    let su = bindAsUTF8(s)
+    expectEqual("ab", String(cString: su))
     dealloc()
   }
   do {
     let (s, dealloc) = getNonASCIICString()
     let result = String(cString: s)
     expectEqual("аб", result)
+    let su = bindAsUTF8(s)
+    expectEqual("аб", String(cString: su))
     dealloc()
   }
   do {
     let (s, dealloc) = getIllFormedUTF8String1()
     let result = String(cString: s)
     expectEqual("\u{41}\u{fffd}\u{fffd}\u{fffd}\u{41}", result)
+    let su = bindAsUTF8(s)
+    expectEqual("\u{41}\u{fffd}\u{fffd}\u{fffd}\u{41}", String(cString: su))
     dealloc()
   }
 }
@@ -416,7 +460,7 @@ CStringTests.test("String(cString:)") {
 CStringTests.test("String.decodeCString") {
   do {
     let s = getNullCString()
-    let result = String.decodeCString(UnsafePointer(s), `as`: UTF8.self)
+    let result = String.decodeCString(UnsafePointer(s), as: UTF8.self)
     expectEmpty(result)
   }
   do { // repairing
@@ -435,6 +479,23 @@ CStringTests.test("String.decodeCString") {
     let result = String.decodeCString(
       UnsafePointer(s), as: UTF8.self, repairingInvalidCodeUnits: false)
     expectEmpty(result)
+    dealloc()
+  }
+}
+
+CStringTests.test("String.nulTerminatedUTF8") {
+  do {
+    let (cstr, dealloc) = getASCIICString()
+    let str = String(cString: cstr)
+    expectEqualCString(cstr, str.nulTerminatedUTF8)
+    expectEqualCString(cstr, str.nulTerminatedUTF8CString)
+    dealloc()
+  }
+  do {
+    let (cstr, dealloc) = getNonASCIICString()
+    let str = String(cString: cstr)
+    expectEqualCString(cstr, str.nulTerminatedUTF8)
+    expectEqualCString(cstr, str.nulTerminatedUTF8CString)
     dealloc()
   }
 }

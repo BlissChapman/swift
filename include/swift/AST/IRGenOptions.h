@@ -20,6 +20,9 @@
 
 #include "swift/AST/LinkLibrary.h"
 #include "swift/Basic/Sanitizers.h"
+// FIXME: This include is just for llvm::SanitizerCoverageOptions. We should
+// split the header upstream so we don't include so much.
+#include "llvm/Transforms/Instrumentation.h"
 #include <string>
 #include <vector>
 
@@ -45,7 +48,9 @@ enum class IRGenOutputKind : unsigned {
 enum class IRGenDebugInfoKind : unsigned {
   None,       /// No debug info.
   LineTables, /// Line tables only.
-  Normal      /// Line tables + DWARF types.
+  ASTTypes,   /// Line tables + AST type references.
+  DwarfTypes, /// Line tables + AST type references + DWARF types.
+  Normal = ASTTypes /// The setting LLDB prefers.
 };
 
 enum class IRGenEmbedMode : unsigned {
@@ -140,14 +145,11 @@ public:
   unsigned HasValueNamesSetting : 1;
   unsigned ValueNames : 1;
 
-  /// Only strip the field names section from nominal type field metadata.
-  unsigned StripReflectionNames : 1;
+  /// Emit nominal type field metadata.
+  unsigned EnableReflectionMetadata : 1;
 
-  /// Strip all nominal type field metadata.
-  unsigned StripReflectionMetadata : 1;
-
-  /// List of backend command-line options for -embed-bitcode.
-  std::vector<uint8_t> CmdArgs;
+  /// Emit names of struct stored properties and enum cases.
+  unsigned EnableReflectionNames : 1;
 
   /// Should we try to build incrementally by not emitting an object file if it
   /// has the same IR hash as the module that we are preparing to emit?
@@ -156,18 +158,27 @@ public:
   /// measurements on a non-clean build directory.
   unsigned UseIncrementalLLVMCodeGen : 1;
 
-  IRGenOptions() : OutputKind(IRGenOutputKind::LLVMAssembly), Verify(true),
-                   Optimize(false), Sanitize(SanitizerKind::None),
-                   DebugInfoKind(IRGenDebugInfoKind::None),
-                   UseJIT(false), DisableLLVMOptzns(false),
-                   DisableLLVMARCOpts(false), DisableLLVMSLPVectorizer(false),
-                   DisableFPElim(true), Playground(false),
-                   EmitStackPromotionChecks(false), GenerateProfile(false),
-                   PrintInlineTree(false), EmbedMode(IRGenEmbedMode::None),
-                   HasValueNamesSetting(false), ValueNames(false),
-                   StripReflectionNames(true), StripReflectionMetadata(true),
-                   CmdArgs(), UseIncrementalLLVMCodeGen(true)
-                   {}
+  /// Enable use of the swiftcall calling convention.
+  unsigned UseSwiftCall : 1;
+
+  /// List of backend command-line options for -embed-bitcode.
+  std::vector<uint8_t> CmdArgs;
+
+  /// Which sanitizer coverage is turned on.
+  llvm::SanitizerCoverageOptions SanitizeCoverage;
+
+  IRGenOptions()
+      : DWARFVersion(2), OutputKind(IRGenOutputKind::LLVMAssembly),
+        Verify(true), Optimize(false), Sanitize(SanitizerKind::None),
+        DebugInfoKind(IRGenDebugInfoKind::None), UseJIT(false),
+        DisableLLVMOptzns(false), DisableLLVMARCOpts(false),
+        DisableLLVMSLPVectorizer(false), DisableFPElim(true), Playground(false),
+        EmitStackPromotionChecks(false), GenerateProfile(false),
+        PrintInlineTree(false), EmbedMode(IRGenEmbedMode::None),
+        HasValueNamesSetting(false), ValueNames(false),
+        EnableReflectionMetadata(true), EnableReflectionNames(true),
+        UseIncrementalLLVMCodeGen(true), UseSwiftCall(false), CmdArgs(),
+        SanitizeCoverage(llvm::SanitizerCoverageOptions()) {}
 
   /// Gets the name of the specified output filename.
   /// If multiple files are specified, the last one is returned.

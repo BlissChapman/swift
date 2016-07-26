@@ -13,7 +13,7 @@
 public // @testable
 protocol _ArrayProtocol
   : RangeReplaceableCollection,
-    ArrayLiteralConvertible
+    ExpressibleByArrayLiteral
 {
   //===--- public interface -----------------------------------------------===//
   /// The number of elements the Array stores.
@@ -30,7 +30,7 @@ protocol _ArrayProtocol
 
   /// If the elements are stored contiguously, a pointer to the first
   /// element. Otherwise, `nil`.
-  var _baseAddressIfContiguous: UnsafeMutablePointer<Element> { get }
+  var _baseAddressIfContiguous: UnsafeMutablePointer<Element>? { get }
 
   subscript(index: Int) -> Iterator.Element { get set }
 
@@ -42,12 +42,11 @@ protocol _ArrayProtocol
   ///   mutable contiguous storage.
   ///
   /// - Complexity: O(`self.count`).
-  mutating func reserveCapacity(minimumCapacity: Int)
+  mutating func reserveCapacity(_ minimumCapacity: Int)
 
   /// Operator form of `append(contentsOf:)`.
-  func += <
-    S : Sequence where S.Iterator.Element == Iterator.Element
-  >(lhs: inout Self, rhs: S)
+  static func += <S : Sequence>(lhs: inout Self, rhs: S)
+    where S.Iterator.Element == Iterator.Element
 
   /// Insert `newElement` at index `i`.
   ///
@@ -55,8 +54,8 @@ protocol _ArrayProtocol
   ///
   /// - Complexity: O(`self.count`).
   ///
-  /// - Precondition: `i <= count`.
-  mutating func insert(newElement: Iterator.Element, at i: Int)
+  /// - Precondition: `startIndex <= i`, `i <= endIndex`.
+  mutating func insert(_ newElement: Iterator.Element, at i: Int)
 
   /// Remove and return the element at the given index.
   ///
@@ -65,6 +64,7 @@ protocol _ArrayProtocol
   /// - Complexity: Worst case O(N).
   ///
   /// - Precondition: `count > index`.
+  @discardableResult
   mutating func remove(at index: Int) -> Iterator.Element
 
   //===--- implementation detail  -----------------------------------------===//

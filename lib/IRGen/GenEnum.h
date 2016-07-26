@@ -23,6 +23,14 @@ namespace llvm {
   class Value;
 }
 
+namespace clang {
+namespace CodeGen {
+namespace swiftcall {
+  class SwiftAggLowering;
+}
+}
+}
+
 namespace swift {
   class EnumElementDecl;
   
@@ -31,6 +39,7 @@ namespace irgen {
   class EnumPayloadSchema;
   class IRGenFunction;
   class TypeConverter;
+  using clang::CodeGen::swiftcall::SwiftAggLowering;
 
 /// \brief Emit the dispatch branch(es) for an address-only enum.
 void emitSwitchAddressOnlyEnumDispatch(IRGenFunction &IGF,
@@ -156,18 +165,18 @@ public:
   virtual ~EnumImplStrategy() { }
   
   /// Construct a layout strategy appropriate to the enum type.
-  static EnumImplStrategy *get(TypeConverter &TC,
-                               SILType Type,
-                               EnumDecl *theEnum);
+  static std::unique_ptr<EnumImplStrategy> get(TypeConverter &TC,
+                                               SILType Type,
+                                               EnumDecl *theEnum);
   
   /// Given an incomplete StructType for the enum, completes layout of the
   /// storage type, calculates its size and alignment, and produces the
   /// TypeInfo for the enum.
   virtual TypeInfo *completeEnumTypeLayout(TypeConverter &TC,
-                                            SILType Type,
-                                            EnumDecl *theEnum,
-                                            llvm::StructType *enumTy) = 0;
-  
+                                           SILType Type,
+                                           EnumDecl *theEnum,
+                                           llvm::StructType *enumTy) = 0;
+
   const TypeInfo &getTypeInfo() const {
     assert(TI);
     return *TI;
@@ -342,9 +351,11 @@ public:
   
   /// \group Delegated TypeInfo operations
   
+  virtual void addToAggLowering(IRGenModule &IGM, SwiftAggLowering &lowering,
+                                Size offset) const = 0;
   virtual void getSchema(ExplosionSchema &schema) const = 0;
   virtual void destroy(IRGenFunction &IGF, Address addr, SILType T) const = 0;
-  
+
   virtual void initializeFromParams(IRGenFunction &IGF, Explosion &params,
                                     Address dest, SILType T) const;
   
@@ -398,8 +409,9 @@ public:
   virtual void reexplode(IRGenFunction &IGF, Explosion &src,
                          Explosion &dest) const = 0;
   virtual void copy(IRGenFunction &IGF, Explosion &src,
-                    Explosion &dest) const = 0;
-  virtual void consume(IRGenFunction &IGF, Explosion &src) const = 0;
+                    Explosion &dest, Atomicity atomicity) const = 0;
+  virtual void consume(IRGenFunction &IGF, Explosion &src,
+                       Atomicity atomicity) const = 0;
   virtual void fixLifetime(IRGenFunction &IGF, Explosion &src) const = 0;
   virtual void packIntoEnumPayload(IRGenFunction &IGF,
                                    EnumPayload &payload,

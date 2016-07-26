@@ -112,7 +112,7 @@ public:
   /// The path to which we should output a Swift reference dependencies file.
   std::string ReferenceDependenciesFilePath;
 
-  /// The path to which we should output a fixits as source edits.
+  /// The path to which we should output fixits as source edits.
   std::string FixitsOutputPath;
 
   /// Arguments which should be passed in immediate mode.
@@ -127,6 +127,12 @@ public:
 
   /// The path to collect the group information for the compiled source files.
   std::string GroupInfoPath;
+
+  /// If non-zero, warn when a function body takes longer than this many
+  /// milliseconds to type-check.
+  ///
+  /// Intended for debugging purposes only.
+  unsigned WarnLongFunctionBodies = 0;
 
   enum ActionType {
     NoneAction, ///< No specific action
@@ -188,9 +194,9 @@ public:
   /// \see ModuleDecl::isTestingEnabled
   bool EnableTesting = false;
 
-  /// Indicates whether we are compiling for resilience.
+  /// Enables the "fully resilient" resilience strategy.
   ///
-  /// \see ModuleDecl::isResilienceEnabled
+  /// \see ResilienceStrategy::Resilient
   bool EnableResilience = false;
 
   /// Indicates that the frontend should emit "verbose" SIL
@@ -205,8 +211,9 @@ public:
   /// by the Clang importer as part of semantic analysis.
   bool SerializeBridgingHeader = false;
 
-  /// Indicates that all generated SIL should be serialized into a module,
-  /// not just code considered fragile.
+  /// Enables the "fully fragile" resilience strategy.
+  ///
+  /// \see ResilienceStrategy::Fragile
   bool SILSerializeAll = false;
 
   /// Indicates whether or not the frontend should print statistics upon

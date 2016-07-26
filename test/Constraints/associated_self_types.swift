@@ -23,7 +23,7 @@ postfix func ~>> <_Self : MySequence, A : P where _Self.Iterator.Element == A.It
 }
 
 protocol _ExtendedSequence : MySequence {
-  postfix func ~>> <A : P where Self.Iterator.Element == A.Iterator.Element>(s: Self) -> A
+  static postfix func ~>> <A : P where Self.Iterator.Element == A.Iterator.Element>(s: Self) -> A
 }
 
 struct MyRangeIterator<T> : MyIteratorProtocol {
@@ -36,7 +36,7 @@ struct MyRange<T> : _ExtendedSequence {
 }
 
 protocol Q : MySequence {
-  func f<QS : MySequence where QS.Iterator.Element == Self.Iterator.Element>(x: QS)
+  func f<QS : MySequence where QS.Iterator.Element == Self.Iterator.Element>(_ x: QS)
 }
 
 struct No<NT> : MyIteratorProtocol {
@@ -48,7 +48,7 @@ struct No<NT> : MyIteratorProtocol {
 class X<XT> : Q {
   typealias Iterator = No<XT>
   
-  func f<SX : MySequence where SX.Iterator.Element == X.Iterator.Element>(x: SX) {
+  func f<SX : MySequence where SX.Iterator.Element == X.Iterator.Element>(_ x: SX) {
   }
   
   func makeIterator() -> No<XT> {

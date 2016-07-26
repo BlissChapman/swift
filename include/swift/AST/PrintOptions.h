@@ -28,22 +28,23 @@ class NominalTypeDecl;
 class TypeBase;
 class DeclContext;
 class Type;
+class ModuleDecl;
 enum DeclAttrKind : unsigned;
-class PrinterArchetypeTransformer;
+class PrinterTypeTransformer;
 class SynthesizedExtensionAnalyzer;
 struct PrintOptions;
 
 /// Necessary information for archetype transformation during printing.
-struct ArchetypeTransformContext {
+struct TypeTransformContext {
   Type getTypeBase();
   NominalTypeDecl *getNominal();
-  PrinterArchetypeTransformer *getTransformer();
+  PrinterTypeTransformer *getTransformer();
   bool isPrintingSynthesizedExtension();
   bool isPrintingTypeInterface();
-  ArchetypeTransformContext(PrinterArchetypeTransformer *Transformer);
-  ArchetypeTransformContext(PrinterArchetypeTransformer *Transformer,
+  TypeTransformContext(PrinterTypeTransformer *Transformer);
+  TypeTransformContext(PrinterTypeTransformer *Transformer,
                             Type T);
-  ArchetypeTransformContext(PrinterArchetypeTransformer *Transformer,
+  TypeTransformContext(PrinterTypeTransformer *Transformer,
                             NominalTypeDecl *NTD,
                             SynthesizedExtensionAnalyzer *Analyzer);
   Type transform(Type Input);
@@ -51,7 +52,7 @@ struct ArchetypeTransformContext {
 
   bool shouldPrintRequirement(ExtensionDecl *ED, StringRef Req);
 
-  ~ArchetypeTransformContext();
+  ~TypeTransformContext();
 private:
   struct Implementation;
   Implementation &Impl;
@@ -83,14 +84,29 @@ public:
   bool hasMergeGroup(MergeGroupKind Kind);
 };
 
-struct BracketOptions {
-  bool shouldOpenExtension = true;
-  bool shouldCloseExtension = true;
-  bool shouldCloseNominal = true;
-  void reset() {
-    shouldOpenExtension = true;
-    shouldCloseExtension = true;
-    shouldCloseNominal = true;
+class BracketOptions {
+  Decl* Target;
+  bool OpenExtension;
+  bool CloseExtension;
+  bool CloseNominal;
+
+public:
+  BracketOptions(Decl *Target = nullptr, bool OpenExtension = true,
+                 bool CloseExtension = true, bool CloseNominal = true) :
+                  Target(Target), OpenExtension(OpenExtension),
+                  CloseExtension(CloseExtension),
+                  CloseNominal(CloseNominal) {}
+
+  bool shouldOpenExtension(const Decl *D) {
+    return D != Target || OpenExtension;
+  }
+
+  bool shouldCloseExtension(const Decl *D) {
+    return D != Target || CloseExtension;
+  }
+
+  bool shouldCloseNominal(const Decl *D) {
+    return D != Target || CloseNominal;
   }
 };
 
@@ -248,6 +264,9 @@ struct PrintOptions {
   /// Whether to use an empty line to separate two members in a single decl.
   bool EmptyLineBetweenMembers = false;
 
+  /// Whether to print the extensions from conforming protocols.
+  bool PrintExtensionFromConformingProtocols = false;
+
   enum class ArgAndParamPrintingMode {
     ArgumentOnly,
     MatchSource,
@@ -287,8 +306,17 @@ struct PrintOptions {
   /// \brief Print types with alternative names from their canonical names.
   llvm::DenseMap<CanType, Identifier> *AlternativeTypeNames = nullptr;
 
+  /// \brief The module in which the printer is used. Determines if the module
+  /// name should be printed when printing a type.
+  ModuleDecl *CurrentModule;
+
   /// \brief The information for converting archetypes to specialized types.
-  std::shared_ptr<ArchetypeTransformContext> TransformContext;
+  std::shared_ptr<TypeTransformContext> TransformContext;
+
+  /// \brief If this is not \c nullptr then functions (including accessors and
+  /// constructors) will be printed with a body that is determined by this
+  /// function.
+  std::function<std::string(const ValueDecl *)> FunctionBody;
 
   BracketOptions BracketOptions;
 
@@ -331,17 +359,19 @@ struct PrintOptions {
     result.SkipPrivateStdlibDecls = true;
     result.SkipUnderscoredStdlibProtocols = true;
     result.SkipDeinit = true;
-    result.ExcludeAttrList.push_back(DAK_WarnUnusedResult);
+    result.ExcludeAttrList.push_back(DAK_DiscardableResult);
     result.EmptyLineBetweenMembers = true;
     result.ElevateDocCommentFromConformance = true;
     return result;
   }
 
-  static PrintOptions printTypeInterface(Type T, const DeclContext *DC);
+  static PrintOptions printTypeInterface(Type T, DeclContext *DC);
 
-  void setArchetypeTransform(Type T, const DeclContext *DC);
+  void setArchetypeSelfTransform(Type T, DeclContext *DC);
 
-  void setArchetypeTransformForQuickHelp(Type T, DeclContext *DC);
+  void setArchetypeSelfTransformForQuickHelp(Type T, DeclContext *DC);
+
+  void setArchetypeAndDynamicSelfTransform(Type T, DeclContext *DC);
 
   void initArchetypeTransformerForSynthesizedExtensions(NominalTypeDecl *D,
                                     SynthesizedExtensionAnalyzer *SynAnalyzer);
@@ -416,7 +446,6 @@ struct PrintOptions {
     PO.PrintDocumentationComments = false;
     PO.ExcludeAttrList.push_back(DAK_Available);
     PO.ExcludeAttrList.push_back(DAK_Swift3Migration);
-    PO.ExcludeAttrList.push_back(DAK_WarnUnusedResult);
     PO.SkipPrivateStdlibDecls = true;
     PO.ExplodeEnumCaseDecls = true;
     return PO;

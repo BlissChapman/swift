@@ -12,10 +12,10 @@
 
 #include "swift/AST/AST.h"
 #include "swift/AST/ASTWalker.h"
+#include "swift/AST/SourceEntityWalker.h"
 #include "swift/Frontend/Frontend.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/IDE/Formatting.h"
-#include "swift/IDE/SourceEntityWalker.h"
 #include "swift/Subsystems.h"
 
 using namespace swift;
@@ -262,7 +262,7 @@ public:
       auto *S = cast<SwitchStmt>(Cursor->getAsStmt());
       if (SM.getLineAndColumn(S->getLBraceLoc()).first == Line)
         return false;
-      if(IsInCommentLine()) {
+      if (IsInCommentLine()) {
         for (auto Case : S->getCases()) {
           // switch ...
           // {
@@ -285,8 +285,8 @@ public:
     //    return 0
     //  }
     if (auto FD = dyn_cast_or_null<FuncDecl>(Start.getAsDecl())) {
-      if(FD->isGetter() && FD->getAccessorKeywordLoc().isInvalid()) {
-        if(SM.getLineNumber(FD->getBody()->getLBraceLoc()) == Line)
+      if (FD->isGetter() && FD->getAccessorKeywordLoc().isInvalid()) {
+        if (SM.getLineNumber(FD->getBody()->getLBraceLoc()) == Line)
           return false;
       }
     }
@@ -373,8 +373,7 @@ public:
         if (SubExpr && SubExpr == AtExprEnd &&
             SM.getLineAndColumn(Paren->getEndLoc()).first == Line)
           return false;
-      }
-      else if (auto *Tuple = dyn_cast_or_null<TupleExpr>(Cursor->getAsExpr())) {
+      } else if (auto *Tuple = dyn_cast_or_null<TupleExpr>(Cursor->getAsExpr())) {
         auto SubExprs = Tuple->getElements();
         if (!SubExprs.empty() && SubExprs.back() == AtExprEnd &&
             SM.getLineAndColumn(Tuple->getEndLoc()).first == Line) {
@@ -385,6 +384,13 @@ public:
         if (Loc.isValid() && SM.getLineNumber(Loc) == Line) {
           return false;
         }
+      } else if (auto *Seq = dyn_cast_or_null<SequenceExpr>(Cursor->getAsExpr())) {
+        ArrayRef<Expr*> Elements = Seq->getElements();
+        if (Elements.size() == 3 &&
+            Elements[1]->getKind() == ExprKind::Assign &&
+            SM.getLineAndColumn(Elements[2]->getEndLoc()).first == Line) {
+              return false;
+        }
       }
     }
 
@@ -393,7 +399,7 @@ public:
   }
 };
 
-class FormatWalker: public ide::SourceEntityWalker {
+class FormatWalker : public SourceEntityWalker {
   typedef std::vector<Token>::iterator TokenIt;
   class SiblingCollector {
     SourceLoc FoundSibling;
@@ -471,7 +477,7 @@ class FormatWalker: public ide::SourceEntityWalker {
         return;
       SourceLoc PrevLoc;
       auto FindAlignLoc = [&](SourceLoc Loc) {
-        if (PrevLoc.isValid() &&
+        if (PrevLoc.isValid() && Loc.isValid() &&
             SM.getLineNumber(PrevLoc) == SM.getLineNumber(Loc))
           return PrevLoc;
         return PrevLoc = Loc;
@@ -498,7 +504,7 @@ class FormatWalker: public ide::SourceEntityWalker {
       if (auto TE = dyn_cast_or_null<TupleExpr>(Node.dyn_cast<Expr *>())) {
         // Trailing closures are not considered siblings to other args.
         unsigned EndAdjust = TE->hasTrailingClosure() ? 1 : 0;
-        for (unsigned I = 0, N = TE->getNumElements() - EndAdjust; I < N; I ++) {
+        for (unsigned I = 0, N = TE->getNumElements() - EndAdjust; I < N; I++) {
           auto EleStart = TE->getElementNameLoc(I);
           if (EleStart.isInvalid()) {
             EleStart = TE->getElement(I)->getStartLoc();
@@ -512,7 +518,7 @@ class FormatWalker: public ide::SourceEntityWalker {
         // Generic type params are siblings to align.
         if (auto GPL = AFD->getGenericParams()) {
           const auto Params = GPL->getParams();
-          for (unsigned I = 0, N = Params.size(); I < N; I ++) {
+          for (unsigned I = 0, N = Params.size(); I < N; I++) {
             addPair(Params[I]->getEndLoc(), FindAlignLoc(Params[I]->getStartLoc()),
                     tok::comma);
           }
@@ -530,21 +536,36 @@ class FormatWalker: public ide::SourceEntityWalker {
 
       // Array/Dictionary elements are siblings to align with each other.
       if (auto AE = dyn_cast_or_null<CollectionExpr>(Node.dyn_cast<Expr *>())) {
+        // The following check ends-up creating too much indentation,
+        // for example:
+        //   let something = [
+        //                       a
+        //   ]
+        //
+        // Disabling the check gets us back to the Swift2.2 behavior:
+        //   let something = [
+        //       a
+        //   ]
+        //
+        // FIXME: We are going to revisit the behavior and the indentation we
+        // want for dictionary/array literals.
+        //
+#if 0
         SourceLoc LBracketLoc = AE->getLBracketLoc();
         if (isTargetImmediateAfter(LBracketLoc) &&
             !sameLineWithTarget(LBracketLoc)) {
           FoundSibling = LBracketLoc;
           NeedExtraIndentation = true;
         }
-        for (unsigned I = 0, N = AE->getNumElements(); I < N;  I ++) {
+#endif
+        for (unsigned I = 0, N = AE->getNumElements(); I < N; I++) {
           addPair(AE->getElement(I)->getEndLoc(),
                   FindAlignLoc(AE->getElement(I)->getStartLoc()), tok::comma);
         }
       }
-
       // Case label items in a case statement are siblings.
       if (auto CS = dyn_cast_or_null<CaseStmt>(Node.dyn_cast<Stmt *>())) {
-        for(const CaseLabelItem& Item : CS->getCaseLabelItems()) {
+        for (const CaseLabelItem& Item : CS->getCaseLabelItems()) {
           addPair(Item.getEndLoc(), FindAlignLoc(Item.getStartLoc()), tok::comma);
         }
       }
@@ -572,13 +593,13 @@ class FormatWalker: public ide::SourceEntityWalker {
   /// Sometimes, target is a part of "parent", for instance, "#else" is a part
   /// of an ifconfigstmt, so that ifconfigstmt is not really the parent of "#else".
   bool isTargetPartOf(swift::ASTWalker::ParentTy Parent) {
-    if(auto Conf = dyn_cast_or_null<IfConfigStmt>(Parent.getAsStmt())) {
+    if (auto Conf = dyn_cast_or_null<IfConfigStmt>(Parent.getAsStmt())) {
       for (auto Clause : Conf->getClauses()) {
         if (Clause.Loc == TargetLocation)
           return true;
       }
     } else if (auto Call = dyn_cast_or_null<CallExpr>(Parent.getAsExpr())) {
-      if(auto Clo = dyn_cast<ClosureExpr>(Call->getFn())) {
+      if (auto Clo = dyn_cast<ClosureExpr>(Call->getFn())) {
         if (Clo->getBody()->getLBraceLoc() == TargetLocation ||
             Clo->getBody()->getRBraceLoc() == TargetLocation) {
           return true;
@@ -619,7 +640,7 @@ class FormatWalker: public ide::SourceEntityWalker {
       return;
     for (auto InValid = Loc.isInvalid(); CurrentTokIt != Tokens.end() &&
          (InValid || SM.isBeforeInBuffer(CurrentTokIt->getLoc(), Loc));
-         CurrentTokIt ++) {
+         CurrentTokIt++) {
       if (CurrentTokIt->getKind() == tok::comment) {
         auto StartLine = SM.getLineNumber(CurrentTokIt->getRange().getStart());
         auto EndLine = SM.getLineNumber(CurrentTokIt->getRange().getEnd());
@@ -824,15 +845,15 @@ std::pair<LineRange, std::string> swift::ide::reformat(LineRange Range,
                                                        CodeFormatOptions Options,
                                                        SourceManager &SM,
                                                        SourceFile &SF) {
-            FormatWalker walker(SF, SM);
-            auto SourceBufferID = SF.getBufferID().getValue();
-            StringRef Text = SM.getLLVMSourceMgr()
-                               .getMemoryBuffer(SourceBufferID)->getBuffer();
-            size_t Offset = getOffsetOfTrimmedLine(Range.startLine(), Text);
-            SourceLoc Loc = SM.getLocForBufferStart(SourceBufferID)
-                              .getAdvancedLoc(Offset);
-            FormatContext FC = walker.walkToLocation(Loc);
-            CodeFormatter CF(Options);
-            return CF.indent(Range.startLine(), FC, Text);
+  FormatWalker walker(SF, SM);
+  auto SourceBufferID = SF.getBufferID().getValue();
+  StringRef Text = SM.getLLVMSourceMgr()
+    .getMemoryBuffer(SourceBufferID)->getBuffer();
+  size_t Offset = getOffsetOfTrimmedLine(Range.startLine(), Text);
+  SourceLoc Loc = SM.getLocForBufferStart(SourceBufferID)
+    .getAdvancedLoc(Offset);
+  FormatContext FC = walker.walkToLocation(Loc);
+  CodeFormatter CF(Options);
+  return CF.indent(Range.startLine(), FC, Text);
 }
 

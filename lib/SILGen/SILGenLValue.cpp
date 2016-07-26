@@ -730,8 +730,8 @@ namespace {
     AccessKind getBaseAccessKind(SILGenFunction &gen,
                                  AccessKind kind) const override {
       SILDeclRef accessor = getAccessor(gen, kind);
-      auto accessorType = gen.SGM.Types.getConstantFunctionType(accessor);
-      if (accessorType->getSelfParameter().isIndirectMutating()) {
+      auto accessorSelf = gen.SGM.Types.getConstantSelfParameter(accessor);
+      if (accessorSelf.getType() && accessorSelf.isIndirectMutating()) {
         return AccessKind::ReadWrite;
       } else {
         return AccessKind::Read;
@@ -830,8 +830,8 @@ namespace {
 
       // If the declaration is dynamically dispatched through a class,
       // we have to use materializeForSet.
-      if (isa<ClassDecl>(decl->getDeclContext())) {
-        if (decl->isFinal())
+      if (auto *classDecl = dyn_cast<ClassDecl>(decl->getDeclContext())) {
+        if (decl->isFinal() || classDecl->isFinal())
           return false;
 
         return true;
@@ -1175,9 +1175,9 @@ namespace {
       // 'base').  If it isn't, we actually need to retain it, because
       // we've still got a release active.
       SILValue baseValue = (isFinal ? base.forward(gen) : base.getValue());
-      if (!isFinal) gen.B.createRetainValue(loc, baseValue);
+      if (!isFinal) gen.B.createRetainValue(loc, baseValue, Atomicity::Atomic);
 
-      gen.B.createStrongUnpin(loc, baseValue);
+      gen.B.createStrongUnpin(loc, baseValue, Atomicity::Atomic);
     }
 
     void print(raw_ostream &OS) const override {
@@ -1514,6 +1514,11 @@ void LValue::print(raw_ostream &OS) const {
 }
 
 LValue SILGenFunction::emitLValue(Expr *e, AccessKind accessKind) {
+  // Some lvalue nodes (namely BindOptionalExprs) require immediate evaluation
+  // of their subexpression, so we must have a writeback scope open while
+  // building an lvalue.
+  assert(InWritebackScope && "must be in a writeback scope");
+
   LValue r = SILGenLValue(*this).visit(e, accessKind);
   // If the final component has an abstraction change, introduce a
   // reabstraction component.
@@ -1652,6 +1657,10 @@ static LValue emitLValueForNonMemberVarDecl(SILGenFunction &gen,
       lv.add<OwnershipComponent>(typeData);
     break;
   }
+  
+  case AccessStrategy::BehaviorStorage:
+    // TODO: Behaviors aren't supported for non-instance properties yet.
+    llvm_unreachable("not implemented");
   }
 
   return lv;
@@ -1750,6 +1759,11 @@ static AccessKind getBaseAccessKind(AbstractStorageDecl *member,
     } else {
       return getBaseAccessKindForAccessor(member->getSetter());
     }
+    
+  case AccessStrategy::BehaviorStorage:
+    // We should only access the behavior storage for initialization purposes.
+    assert(accessKind == AccessKind::Write);
+    return AccessKind::Write;
   }
   llvm_unreachable("bad access strategy");
 }
@@ -1795,7 +1809,8 @@ void LValue::addMemberVarComponent(SILGenFunction &gen, SILLocation loc,
   }
 
   assert(strategy == AccessStrategy::Addressor ||
-         strategy == AccessStrategy::Storage);
+         strategy == AccessStrategy::Storage ||
+         strategy == AccessStrategy::BehaviorStorage);
 
   // Otherwise, the lvalue access is performed with a fragile element reference.
   // Find the substituted storage type.
@@ -1823,9 +1838,17 @@ void LValue::addMemberVarComponent(SILGenFunction &gen, SILLocation loc,
 
   auto typeData = getPhysicalStorageTypeData(gen.SGM, var, formalRValueType);
 
+  // For behavior initializations, we should have set up a marking proxy that
+  // replaces the access path.
+  if (strategy == AccessStrategy::BehaviorStorage) {
+    auto addr = gen.VarLocs.find(var);
+    assert(addr != gen.VarLocs.end() && addr->second.value);
+    Path.clear();
+    add<ValueComponent>(ManagedValue::forUnmanaged(addr->second.value),
+                        typeData);
   // For member variables, this access is done w.r.t. a base computation that
   // was already emitted.  This member is accessed off of it.
-  if (strategy == AccessStrategy::Addressor) {
+  } else if (strategy == AccessStrategy::Addressor) {
     add<AddressorComponent>(var, isSuper, /*direct*/ true, subs,
                             baseFormalType, typeData, varStorageType);
   } else if (baseFormalType->mayHaveSuperclass()) {
@@ -2002,10 +2025,8 @@ LValue SILGenFunction::emitPropertyLValue(SILLocation loc, ManagedValue base,
   SILGenLValue sgl(*this);
   LValue lv;
 
-  ArrayRef<Substitution> subs;
-  if (auto genericType = base.getType().getAs<BoundGenericType>()) {
-    subs = genericType->getSubstitutions(SGM.SwiftModule, nullptr);
-  }
+  ArrayRef<Substitution> subs =
+      base.getType().gatherAllSubstitutions(SGM.M);
 
   LValueTypeData baseTypeData = getValueTypeData(baseFormalType,
                                                  base.getValue());
@@ -2133,7 +2154,7 @@ SILValue SILGenFunction::emitConversionToSemanticRValue(SILLocation loc,
     assert(unownedType->isLoadable(ResilienceExpansion::Maximal));
     (void) unownedType;
 
-    B.createStrongRetainUnowned(loc, src);
+    B.createStrongRetainUnowned(loc, src, Atomicity::Atomic);
     return B.createUnownedToRef(loc, src,
                 SILType::getPrimitiveObjectType(unownedType.getReferentType()));
   }
@@ -2143,7 +2164,7 @@ SILValue SILGenFunction::emitConversionToSemanticRValue(SILLocation loc,
   if (auto unmanagedType = src->getType().getAs<UnmanagedStorageType>()) {
     auto result = B.createUnmanagedToRef(loc, src,
               SILType::getPrimitiveObjectType(unmanagedType.getReferentType()));
-    B.createStrongRetain(loc, result);
+    B.createStrongRetain(loc, result, Atomicity::Atomic);
     return result;
   }
 
@@ -2172,10 +2193,12 @@ static SILValue emitLoadOfSemanticRValue(SILGenFunction &gen,
     }
 
     auto unownedValue = gen.B.createLoad(loc, src);
-    gen.B.createStrongRetainUnowned(loc, unownedValue);
-    if (isTake) gen.B.createUnownedRelease(loc, unownedValue);
-    return gen.B.createUnownedToRef(loc, unownedValue,
-              SILType::getPrimitiveObjectType(unownedType.getReferentType()));
+    gen.B.createStrongRetainUnowned(loc, unownedValue, Atomicity::Atomic);
+    if (isTake)
+      gen.B.createUnownedRelease(loc, unownedValue, Atomicity::Atomic);
+    return gen.B.createUnownedToRef(
+        loc, unownedValue,
+        SILType::getPrimitiveObjectType(unownedType.getReferentType()));
   }
 
   // For @unowned(unsafe) types, we need to strip the unmanaged box.
@@ -2183,7 +2206,7 @@ static SILValue emitLoadOfSemanticRValue(SILGenFunction &gen,
     auto value = gen.B.createLoad(loc, src);
     auto result = gen.B.createUnmanagedToRef(loc, value,
             SILType::getPrimitiveObjectType(unmanagedType.getReferentType()));
-    gen.B.createStrongRetain(loc, result);
+    gen.B.createStrongRetain(loc, result, Atomicity::Atomic);
     return result;
   }
 
@@ -2235,7 +2258,7 @@ static void emitStoreOfSemanticRValue(SILGenFunction &gen,
 
     auto unownedValue =
       gen.B.createRefToUnowned(loc, value, storageType.getObjectType());
-    gen.B.createUnownedRetain(loc, unownedValue);
+    gen.B.createUnownedRetain(loc, unownedValue, Atomicity::Atomic);
     emitUnloweredStoreOfCopy(gen.B, loc, unownedValue, dest, isInit);
     gen.B.emitStrongReleaseAndFold(loc, value);
     return;
@@ -2336,7 +2359,7 @@ SILValue SILGenFunction::emitConversionFromSemanticValue(SILLocation loc,
     (void) unownedType;
 
     SILValue unowned = B.createRefToUnowned(loc, semanticValue, storageType);
-    B.createUnownedRetain(loc, unowned);
+    B.createUnownedRetain(loc, unowned, Atomicity::Atomic);
     B.emitStrongReleaseAndFold(loc, semanticValue);
     return unowned;
   }
@@ -2436,13 +2459,10 @@ void SILGenFunction::emitAssignToLValue(SILLocation loc, RValue &&src,
 
   // Peephole: instead of materializing and then assigning into a
   // translation component, untransform the value first.
-  if (dest.isLastComponentTranslation()) {
-    // Repeatedly reverse translation components.
-    do {
-      src = std::move(dest.getLastTranslationComponent())
-                   .untranslate(*this, loc, std::move(src));
-      dest.dropLastTranslationComponent();
-    } while (dest.isLastComponentTranslation());
+  while (dest.isLastComponentTranslation()) {
+    src = std::move(dest.getLastTranslationComponent())
+                 .untranslate(*this, loc, std::move(src));
+    dest.dropLastTranslationComponent();
   }
   
   // Resolve all components up to the last, keeping track of value-type logical

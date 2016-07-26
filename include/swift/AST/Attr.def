@@ -31,8 +31,11 @@
 #endif
 
 // Type attributes
+TYPE_ATTR(autoclosure)
 TYPE_ATTR(convention)
 TYPE_ATTR(noreturn)
+TYPE_ATTR(noescape)
+TYPE_ATTR(escaping)
 
 // SIL-specific attributes
 TYPE_ATTR(block_storage)
@@ -46,7 +49,6 @@ TYPE_ATTR(in)
 TYPE_ATTR(inout)
 TYPE_ATTR(inout_aliasable)
 TYPE_ATTR(in_guaranteed)
-TYPE_ATTR(noescape)
 TYPE_ATTR(owned)
 TYPE_ATTR(unowned_inner_pointer)
 TYPE_ATTR(guaranteed)
@@ -56,9 +58,9 @@ TYPE_ATTR(callee_guaranteed)
 TYPE_ATTR(objc_metatype)
 TYPE_ATTR(opened)
 TYPE_ATTR(deallocating)
+TYPE_ATTR(pseudogeneric)
 
-// Deprecated type attributes
-TYPE_ATTR(objc_block)
+// SIL metatype attributes.
 TYPE_ATTR(thin)
 TYPE_ATTR(thick)
 
@@ -191,6 +193,7 @@ DECL_ATTR(private, Accessibility,
           OnClass | OnProtocol | OnVar | OnSubscript | OnConstructor |
           DeclModifier | NotSerialized,
           /* Not serialized */ 46)
+DECL_ATTR_ALIAS(fileprivate, Accessibility)
 DECL_ATTR_ALIAS(internal, Accessibility)
 DECL_ATTR_ALIAS(public, Accessibility)
 
@@ -203,13 +206,12 @@ DECL_ATTR(__raw_doc_comment, RawDocComment, OnAnyDecl |
           NotSerialized | RejectByParser, /* Not serialized */48)
 
 // Also handles unowned and unowned(weak).
-DECL_ATTR(weak,    Ownership, OnVar | OnParam | DeclModifier | NotSerialized,
+DECL_ATTR(weak, Ownership, OnVar | OnParam | DeclModifier | NotSerialized,
           /* Not serialized */49)
+DECL_ATTR_ALIAS(unowned, Ownership)
 
 DECL_ATTR(effects, Effects, OnFunc | OnConstructor | OnDestructor |
           UserInaccessible, 50)
-
-DECL_ATTR_ALIAS(unowned, Ownership)
 
 DECL_ATTR(__objc_bridged, ObjCBridged, OnClass | NotSerialized | RejectByParser,
           /* Not serialized */51)
@@ -233,9 +235,6 @@ DECL_ATTR(_alignment, Alignment, OnStruct | OnEnum | UserInaccessible, 56)
 SIMPLE_DECL_ATTR(rethrows, Rethrows,
                  OnFunc | OnConstructor | RejectByParser, 57)
 
-DECL_ATTR(warn_unused_result, WarnUnusedResult,
-          OnFunc | OnConstructor | LongAttribute, 58)
-
 DECL_ATTR(_swift_native_objc_runtime_base, SwiftNativeObjCRuntimeBase,
           OnClass | UserInaccessible, 59)
 
@@ -252,6 +251,20 @@ SIMPLE_DECL_ATTR(_show_in_interface, ShowInInterface,
 DECL_ATTR(_cdecl, CDecl,
           OnFunc | LongAttribute | UserInaccessible, 63)
 
+// A testing attribute for Library Evolution ("resilience").
+// FIXME: Replace with improved @available attribute.
+SIMPLE_DECL_ATTR(_versioned, Versioned,
+                 OnFunc | OnVar | OnSubscript | OnConstructor |
+                 OnStruct | OnEnum | OnClass | OnProtocol |
+                 LongAttribute | UserInaccessible,
+                 64)
+
+SIMPLE_DECL_ATTR(discardableResult, DiscardableResult,
+                 OnFunc | OnConstructor | LongAttribute, 65)
+
+SIMPLE_DECL_ATTR(GKInspectable, GKInspectable, OnVar, 66)
+
+SIMPLE_DECL_ATTR(escaping, Escaping, OnParam, 67)
 
 #undef TYPE_ATTR
 #undef DECL_ATTR_ALIAS

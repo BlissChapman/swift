@@ -148,7 +148,7 @@ Effects *FunctionEffects::getEffectsOn(SILValue Addr) {
 
 bool SideEffectAnalysis::getDefinedEffects(FunctionEffects &Effects,
                                            SILFunction *F) {
-  if (F->getLoweredFunctionType()->isNoReturn()) {
+  if (F->hasSemanticsAttr("arc.programtermination_point")) {
     Effects.Traps = true;
     return true;
   }
@@ -352,24 +352,42 @@ void SideEffectAnalysis::analyzeInstruction(FunctionInfo *FInfo,
     case ValueKind::CondFailInst:
       FInfo->FE.Traps = true;
       return;
-    case ValueKind::PartialApplyInst:
+    case ValueKind::PartialApplyInst: {
       FInfo->FE.AllocsObjects = true;
+      auto *PAI = cast<PartialApplyInst>(I);
+      auto Args = PAI->getArguments();
+      auto Params = PAI->getSubstCalleeType()->getParameters();
+      Params = Params.slice(Params.size() - Args.size(), Args.size());
+      for (unsigned Idx : indices(Args)) {
+        if (isIndirectParameter(Params[Idx].getConvention()))
+          FInfo->FE.getEffectsOn(Args[Idx])->Reads = true;
+      }
       return;
+    }
     case ValueKind::BuiltinInst: {
-      auto &BI = cast<BuiltinInst>(I)->getBuiltinInfo();
+      auto *BInst = cast<BuiltinInst>(I);
+      auto &BI = BInst->getBuiltinInfo();
       switch (BI.ID) {
         case BuiltinValueKind::IsUnique:
           // TODO: derive this information in a more general way, e.g. add it
           // to Builtins.def
           FInfo->FE.ReadsRC = true;
           break;
+        case BuiltinValueKind::CondUnreachable:
+          FInfo->FE.Traps = true;
+          return;
         default:
           break;
+      }
+      const IntrinsicInfo &IInfo = BInst->getIntrinsicInfo();
+      if (IInfo.ID == llvm::Intrinsic::trap) {
+        FInfo->FE.Traps = true;
+        return;
       }
       // Detailed memory effects of builtins are handled below by checking the
       // memory behavior of the instruction.
       break;
-      }
+    }
     default:
       break;
   }

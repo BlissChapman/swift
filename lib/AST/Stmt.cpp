@@ -91,7 +91,6 @@ template <class T> static SourceRange getSourceRangeImpl(const T *S) {
                 "or getStartLoc()/getEndLoc()");
   return Dispatch<isOverriddenFromStmt(&T::getSourceRange)>::getSourceRange(S);
 }
-
 SourceRange Stmt::getSourceRange() const {
   switch (getKind()) {
 #define STMT(ID, PARENT)                                           \
@@ -154,7 +153,9 @@ SourceLoc ReturnStmt::getStartLoc() const {
   return ReturnLoc;
 }
 SourceLoc ReturnStmt::getEndLoc() const {
-  return (Result ? Result->getEndLoc() : ReturnLoc);
+  if (Result && Result->getEndLoc().isValid())
+    return Result->getEndLoc();
+  return ReturnLoc;
 }
 
 SourceLoc ThrowStmt::getEndLoc() const { return SubExpr->getEndLoc(); }
@@ -283,24 +284,14 @@ SourceLoc PoundAvailableInfo::getEndLoc() const {
 }
 
 void PoundAvailableInfo::
-getPlatformKeywordRanges(SmallVectorImpl<CharSourceRange> &PlatformRanges) {
+getPlatformKeywordLocs(SmallVectorImpl<SourceLoc> &PlatformLocs) {
   for (unsigned i = 0; i < NumQueries; i++) {
     auto *VersionSpec =
       dyn_cast<VersionConstraintAvailabilitySpec>(getQueries()[i]);
     if (!VersionSpec)
       continue;
     
-    auto Loc = VersionSpec->getPlatformLoc();
-    auto Platform = VersionSpec->getPlatform();
-    switch (Platform) {
-    case PlatformKind::none:
-      break;
-#define AVAILABILITY_PLATFORM(X, PrettyName)                          \
-  case PlatformKind::X:                                               \
-    PlatformRanges.push_back(CharSourceRange(Loc, strlen(#X)));       \
-    break;
-#include "swift/AST/PlatformKinds.def"
-    }
+    PlatformLocs.push_back(VersionSpec->getPlatformLoc());
   }
 }
 

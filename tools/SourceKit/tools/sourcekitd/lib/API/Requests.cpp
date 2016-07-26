@@ -21,6 +21,7 @@
 #include "SourceKit/Support/Concurrency.h"
 #include "SourceKit/Support/Logging.h"
 #include "SourceKit/Support/UIdent.h"
+#include "SourceKit/SwiftLang/Factory.h"
 
 #include "swift/Basic/DemangleWrappers.h"
 
@@ -87,6 +88,8 @@ static LazySKDUID RequestEditorOpenHeaderInterface(
     "source.request.editor.open.interface.header");
 static LazySKDUID RequestEditorOpenSwiftSourceInterface(
     "source.request.editor.open.interface.swiftsource");
+static LazySKDUID RequestEditorOpenSwiftTypeInterface(
+    "source.request.editor.open.interface.swifttype");
 static LazySKDUID RequestEditorExtractTextFromComment(
     "source.request.editor.extract.comment");
 static LazySKDUID RequestEditorClose("source.request.editor.close");
@@ -132,7 +135,8 @@ static void onDocumentUpdateNotification(StringRef DocumentName) {
 static SourceKit::Context *GlobalCtx = nullptr;
 
 void sourcekitd::initialize() {
-  GlobalCtx = new SourceKit::Context(sourcekitd::getRuntimeLibPath());
+  GlobalCtx = new SourceKit::Context(sourcekitd::getRuntimeLibPath(),
+                                     SourceKit::createSwiftLangSupport);
   GlobalCtx->getNotificationCenter().addDocumentUpdateNotificationReceiver(
     onDocumentUpdateNotification);
 }
@@ -191,7 +195,8 @@ editorOpen(StringRef Name, llvm::MemoryBuffer *Buf, bool EnableSyntaxMap,
 static sourcekitd_response_t
 editorOpenInterface(StringRef Name, StringRef ModuleName,
                     Optional<StringRef> Group, ArrayRef<const char *> Args,
-                    bool SynthesizedExtensions);
+                    bool SynthesizedExtensions,
+                    Optional<StringRef> InterestedUSR);
 
 static sourcekitd_response_t
 editorOpenHeaderInterface(StringRef Name, StringRef HeaderName,
@@ -202,6 +207,10 @@ static void
 editorOpenSwiftSourceInterface(StringRef Name, StringRef SourceName,
                                ArrayRef<const char *> Args,
                                ResponseReceiver Rec);
+
+static void
+editorOpenSwiftTypeInterface(StringRef TypeUsr, ArrayRef<const char *> Args,
+                             ResponseReceiver Rec);
 
 static sourcekitd_response_t editorExtractTextFromComment(StringRef Source);
 
@@ -474,8 +483,9 @@ void handleRequestImpl(sourcekitd_object_t ReqObj, ResponseReceiver Rec) {
     int64_t SynthesizedExtension = false;
     Req.getInt64(KeySynthesizedExtension, SynthesizedExtension,
                  /*isOptional=*/true);
+    Optional<StringRef> InterestedUSR = Req.getString(KeyInterestedUSR);
     return Rec(editorOpenInterface(*Name, *ModuleName, GroupName, Args,
-                                   SynthesizedExtension));
+                                   SynthesizedExtension, InterestedUSR));
   }
 
   if (ReqUID == RequestEditorOpenHeaderInterface) {
@@ -500,6 +510,13 @@ void handleRequestImpl(sourcekitd_object_t ReqObj, ResponseReceiver Rec) {
     if (!FileName.hasValue())
       return Rec(createErrorRequestInvalid("missing 'key.sourcefile'"));
     return editorOpenSwiftSourceInterface(*Name, *FileName, Args, Rec);
+  }
+
+  if (ReqUID == RequestEditorOpenSwiftTypeInterface) {
+    Optional<StringRef> Usr = Req.getString(KeyUSR);
+    if (!Usr.hasValue())
+      return Rec(createErrorRequestInvalid("missing 'key.usr'"));
+    return editorOpenSwiftTypeInterface(*Usr, Args, Rec);
   }
 
   if (ReqUID == RequestEditorExtractTextFromComment) {
@@ -880,20 +897,19 @@ bool SKIndexingConsumer::startSourceEntity(const EntityInfo &Info) {
   if (!Info.Group.empty())
     Elem.set(KeyGroupName, Info.Group);
 
-  if (Info.EntityType == EntityInfo::FuncDecl) {
-    const FuncDeclEntityInfo &FDInfo =
-        static_cast<const FuncDeclEntityInfo &>(Info);
-    if (FDInfo.IsTestCandidate)
-      Elem.setBool(KeyIsTestCandidate, true);
-  }
+  if (!Info.ReceiverUSR.empty())
+    Elem.set(KeyReceiverUSR, Info.ReceiverUSR);
+  if (Info.IsDynamic)
+    Elem.setBool(KeyIsDynamic, true);
+  if (Info.IsTestCandidate)
+    Elem.setBool(KeyIsTestCandidate, true);
 
-  if (Info.EntityType == EntityInfo::CallReference) {
-    const CallRefEntityInfo &CRInfo =
-        static_cast<const CallRefEntityInfo &>(Info);
-    if (!CRInfo.ReceiverUSR.empty())
-      Elem.set(KeyReceiverUSR, CRInfo.ReceiverUSR);
-    if (CRInfo.IsDynamic)
-      Elem.setBool(KeyIsDynamic, true);
+  if (!Info.Attrs.empty()) {
+    auto AttrArray = Elem.setArray(KeyAttributes);
+    for (auto Attr : Info.Attrs) {
+      auto AttrDict = AttrArray.appendDictionary();
+      AttrDict.set(KeyAttribute, Attr);
+    }
   }
 
   EntitiesStack.push_back({ Info.Kind, Elem, ResponseBuilder::Array(),
@@ -1101,6 +1117,8 @@ void SKDocConsumer::addDocEntityInfoToDict(const DocEntityInfo &Info,
     Elem.set(KeyUSR, Info.USR);
   if (!Info.OriginalUSR.empty())
     Elem.set(KeyOriginalUSR, Info.OriginalUSR);
+  if (!Info.ProvideImplementationOfUSR.empty())
+    Elem.set(KeyDefaultImplementationOf, Info.ProvideImplementationOfUSR);
   if (Info.Length > 0) {
     Elem.set(KeyOffset, Info.Offset);
     Elem.set(KeyLength, Info.Length);
@@ -1109,6 +1127,8 @@ void SKDocConsumer::addDocEntityInfoToDict(const DocEntityInfo &Info,
     Elem.set(KeyIsUnavailable, Info.IsUnavailable);
   if (Info.IsDeprecated)
     Elem.set(KeyIsDeprecated, Info.IsDeprecated);
+  if (Info.IsOptional)
+    Elem.set(KeyIsOptional, Info.IsOptional);
   if (!Info.DocComment.empty())
     Elem.set(KeyDocFullAsXML, Info.DocComment);
   if (!Info.FullyAnnotatedDecl.empty())
@@ -1321,6 +1341,10 @@ static void reportCursorInfo(const CursorInfo &Info, ResponseReceiver Rec) {
     Elem.setBool(KeyIsSystem, true);
   if (!Info.TypeInterface.empty())
     Elem.set(KeyTypeInterface, Info.TypeInterface);
+  if (!Info.TypeUSR.empty())
+    Elem.set(KeyTypeUsr, Info.TypeUSR);
+  if (!Info.ContainerTypeUSR.empty())
+    Elem.set(KeyContainerTypeUsr, Info.ContainerTypeUSR);
 
   return Rec(RespBuilder.createResponse());
 }
@@ -1785,14 +1809,15 @@ editorOpen(StringRef Name, llvm::MemoryBuffer *Buf, bool EnableSyntaxMap,
 static sourcekitd_response_t
 editorOpenInterface(StringRef Name, StringRef ModuleName,
                     Optional<StringRef> Group, ArrayRef<const char *> Args,
-                    bool SynthesizedExtensions) {
+                    bool SynthesizedExtensions,
+                    Optional<StringRef> InterestedUSR) {
   SKEditorConsumer EditC(/*EnableSyntaxMap=*/true,
                          /*EnableStructure=*/true,
                          /*EnableDiagnostics=*/false,
                          /*SyntacticOnly=*/false);
   LangSupport &Lang = getGlobalContext().getSwiftLangSupport();
   Lang.editorOpenInterface(EditC, Name, ModuleName, Group, Args,
-                           SynthesizedExtensions);
+                           SynthesizedExtensions, InterestedUSR);
   return EditC.createResponse();
 }
 
@@ -1810,6 +1835,18 @@ editorOpenSwiftSourceInterface(StringRef Name, StringRef HeaderName,
                                                   /*SyntacticOnly=*/false);
   LangSupport &Lang = getGlobalContext().getSwiftLangSupport();
   Lang.editorOpenSwiftSourceInterface(Name, HeaderName, Args, EditC);
+}
+
+static void
+editorOpenSwiftTypeInterface(StringRef TypeUsr, ArrayRef<const char *> Args,
+                             ResponseReceiver Rec) {
+  auto EditC = std::make_shared<SKEditorConsumer>(Rec,
+                                                  /*EnableSyntaxMap=*/true,
+                                                  /*EnableStructure=*/true,
+                                                  /*EnableDiagnostics=*/false,
+                                                  /*SyntacticOnly=*/false);
+  LangSupport &Lang = getGlobalContext().getSwiftLangSupport();
+  Lang.editorOpenTypeInterface(*EditC, Args, TypeUsr);
 }
 
 static sourcekitd_response_t editorExtractTextFromComment(StringRef Source) {

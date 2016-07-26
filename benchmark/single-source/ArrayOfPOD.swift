@@ -43,8 +43,8 @@ func genEnumArray() {
 }
 
 struct S {
-  var x : Int
-  var y : Int
+  var x: Int
+  var y: Int
 }
 @inline(never)
 func genStructArray() {
@@ -53,7 +53,7 @@ func genStructArray() {
 }
 
 @inline(never)
-public func run_ArrayOfPOD(N: Int) {
+public func run_ArrayOfPOD(_ N: Int) {
   for _ in 0...N {
     genIntArray()
     genEnumArray()

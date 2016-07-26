@@ -17,6 +17,11 @@
 #ifndef SWIFT_IRGEN_GENPROTO_H
 #define SWIFT_IRGEN_GENPROTO_H
 
+#include "swift/SIL/SILFunction.h"
+
+#include "Fulfillment.h"
+#include "GenericRequirement.h"
+
 namespace llvm {
   class Type;
 }
@@ -35,6 +40,7 @@ namespace irgen {
   class CallEmission;
   class IRGenFunction;
   class IRGenModule;
+  class MetadataPath;
   class ProtocolInfo;
   class TypeInfo;
 
@@ -170,6 +176,66 @@ namespace irgen {
                                           ArrayRef<ProtocolEntry> protos,
                                           ProtocolDecl *target,
                                     const GetWitnessTableFn &getWitnessTable);
+
+  class MetadataSource {
+  public:
+    enum class Kind {
+      /// Metadata is derived from a source class pointer.
+      ClassPointer,
+
+      /// Metadata is derived from a type metadata pointer.
+      Metadata,
+
+      /// Metadata is derived from the origin type parameter.
+      GenericLValueMetadata,
+
+      /// Metadata is obtained directly from the from a Self metadata
+      /// parameter passed via the WitnessMethod convention.
+      SelfMetadata,
+
+      /// Metadata is derived from the Self witness table parameter
+      /// passed via the WitnessMethod convention.
+      SelfWitnessTable,
+    };
+
+    static bool requiresSourceIndex(Kind kind) {
+      return (kind == Kind::ClassPointer ||
+              kind == Kind::Metadata ||
+              kind == Kind::GenericLValueMetadata);
+    }
+
+    enum : unsigned { InvalidSourceIndex = ~0U };
+
+  private:
+    /// The kind of source this is.
+    Kind TheKind;
+
+    /// The parameter index, for ClassPointer and Metadata sources.
+    unsigned Index;
+
+  public:
+    CanType Type;
+
+    MetadataSource(Kind kind, unsigned index, CanType type)
+      : TheKind(kind), Index(index), Type(type) {
+      assert(index != InvalidSourceIndex || !requiresSourceIndex(kind));
+    }
+
+    Kind getKind() const { return TheKind; }
+    unsigned getParamIndex() const {
+      assert(requiresSourceIndex(getKind()));
+      return Index;
+    }
+  };
+
+  using GenericParamFulfillmentCallback =
+    llvm::function_ref<void(CanType genericParamType,
+                            const MetadataSource &source,
+                            const MetadataPath &path)>;
+
+  void enumerateGenericParamFulfillments(IRGenModule &IGM,
+    CanSILFunctionType fnType,
+    GenericParamFulfillmentCallback callback);
 
 } // end namespace irgen
 } // end namespace swift

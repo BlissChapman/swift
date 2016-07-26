@@ -2,13 +2,14 @@
 
 .. raw:: html
 
-   <style>
-   table.docutils td, table.docutils th {
-       border: 1px solid #aaa;
-   }
-   </style>
-   
-    
+    <style>
+    table.docutils td,
+    table.docutils th {
+      border: 1px solid #aaa;
+    }
+    </style>
+
+
 ==================================
 Immutability and Read-Only Methods
 ==================================
@@ -252,7 +253,7 @@ unless the method is attributed with ``mutating``:
 
 .. parsed-literal::
 
-  func f(x: Int, inout y: Int) {
+  func f(_ x: Int, y: inout Int) {
     y = x         // ok, y is an inout parameter
     x = y         // **Error:** function parameter 'x' is immutable
   }

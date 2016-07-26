@@ -30,6 +30,7 @@
 #include "swift/Basic/OptionSet.h"
 #include "swift/Config.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/TinyPtrVector.h"
 #include <functional>
 
 namespace swift {
@@ -403,10 +404,12 @@ enum class ObjCReason {
   ExplicitlyDynamic,
   ExplicitlyObjC,
   ExplicitlyIBOutlet,
+  ExplicitlyIBAction,
   ExplicitlyNSManaged,
   MemberOfObjCProtocol,
   ImplicitlyObjC,
-  OverridesObjC
+  OverridesObjC,
+  WitnessToObjC,
 };
 
 /// Return the %select discriminator for the OBJC_ATTR_SELECT macro used to
@@ -457,12 +460,18 @@ public:
   /// during type checking.
   llvm::SetVector<NominalTypeDecl *> ValidatedTypes;
 
-  /// Caches whether a particular type is accessible from a particular file
-  /// unit.
+  using TypeAccessScopeCacheMap = llvm::DenseMap<Type, const DeclContext *>;
+
+  /// Caches the outermost scope where a particular type can be used, relative
+  /// to a particular file.
+  ///
+  /// The file is used to handle things like \c \@testable. A null-but-present
+  /// value means the type is public.
   ///
   /// This can't use CanTypes because typealiases may have more limited types
   /// than their underlying types.
-  llvm::DenseMap<Type, Accessibility> TypeAccessibilityCache;
+  llvm::DenseMap<const SourceFile *, TypeAccessScopeCacheMap>
+    TypeAccessScopeCache;
 
   // Caches whether a given declaration is "as specialized" as another.
   llvm::DenseMap<std::pair<ValueDecl*, ValueDecl*>, bool> 
@@ -510,6 +519,59 @@ public:
   llvm::DenseMap<AnyFunctionRef, std::vector<Expr*>> LocalCFunctionPointers;
 
 private:
+  /// Return statements with functions as return values.
+  llvm::DenseMap<AbstractFunctionDecl *, llvm::DenseSet<ReturnStmt *>>
+    FunctionAsReturnValue;
+
+  /// Function apply expressions with a certain function as an argument.
+  llvm::DenseMap<AbstractFunctionDecl *, llvm::DenseSet<ApplyExpr *>>
+    FunctionAsEscapingArg;
+
+public:
+  /// Record an occurrence of a function that captures inout values as an
+  /// argument.
+  ///
+  /// \param decl the function that occurs as an argument.
+  ///
+  /// \param apply the expression in which the function appears.
+  void addEscapingFunctionAsArgument(AbstractFunctionDecl *decl,
+                                     ApplyExpr *apply) {
+    FunctionAsEscapingArg[decl].insert(apply);
+  }
+
+  /// Find occurrences of a function that captures inout values as arguments.
+  ///
+  /// \param decl the function that occurs as an argument.
+  ///
+  /// \returns Expressions in which the function appears as arguments.
+  llvm::DenseSet<ApplyExpr *> &
+  getEscapingFunctionAsArgument(AbstractFunctionDecl *decl) {
+    return FunctionAsEscapingArg[decl];
+  }
+
+  /// Record an occurrence of  a function that captures inout values as a return
+  /// value
+  ///
+  /// \param decl the function that occurs as a return value.
+  ///
+  /// \param stmt the expression in which the function appears.
+  void addEscapingFunctionAsReturnValue(AbstractFunctionDecl *decl,
+                                        ReturnStmt *stmt) {
+    FunctionAsReturnValue[decl].insert(stmt);
+  }
+
+  /// Find occurrences of a function that captures inout values as return
+  /// values.
+  ///
+  /// \param decl the function that occurs as a return value.
+  ///
+  /// \returns Expressions in which the function appears as arguments.
+  llvm::DenseSet<ReturnStmt *> &
+  getEscapingFunctionAsReturnValue(AbstractFunctionDecl *decl) {
+    return FunctionAsReturnValue[decl];
+  }
+
+private:
   Type IntLiteralType;
   Type FloatLiteralType;
   Type BooleanLiteralType;
@@ -543,6 +605,12 @@ private:
   /// The index of the next response metavariable to bind to a REPL result.
   unsigned NextResponseVariableIndex = 0;
 
+  /// If non-zero, warn when a function body takes longer than this many
+  /// milliseconds to type-check.
+  ///
+  /// Intended for debugging purposes only.
+  unsigned WarnLongFunctionBodies = 0;
+
   /// If true, the time it takes to type-check each function will be dumped
   /// to llvm::errs().
   bool DebugTimeFunctionBodies = false;
@@ -555,7 +623,7 @@ private:
   /// A helper to construct and typecheck call to super.init().
   ///
   /// \returns NULL if the constructed expression does not typecheck.
-  Expr* constructCallToSuperInit(ConstructorDecl *ctor,  ClassDecl *ClDecl);
+  Expr* constructCallToSuperInit(ConstructorDecl *ctor, ClassDecl *ClDecl);
 
 public:
   TypeChecker(ASTContext &Ctx) : TypeChecker(Ctx, Ctx.Diags) { }
@@ -567,6 +635,14 @@ public:
   /// Dump the time it takes to type-check each function to llvm::errs().
   void enableDebugTimeFunctionBodies() {
     DebugTimeFunctionBodies = true;
+  }
+
+  /// If \p timeInMS is non-zero, warn when a function body takes longer than
+  /// this many milliseconds to type-check.
+  ///
+  /// Intended for debugging purposes only.
+  void setWarnLongFunctionBodies(unsigned timeInMS) {
+    WarnLongFunctionBodies = timeInMS;
   }
 
   bool getInImmediateMode() {
@@ -704,6 +780,7 @@ public:
   /// to be in a correct and valid form.
   ///
   /// \param type The generic type to which to apply arguments.
+  /// \param decl The declaration of the type.
   /// \param loc The source location for diagnostic reporting.
   /// \param dc The context where the arguments are applied.
   /// \param generic The arguments to apply with the angle bracket range for
@@ -716,8 +793,8 @@ public:
   /// error.
   ///
   /// \see applyUnboundGenericArguments
-  Type applyGenericArguments(Type type, SourceLoc loc, DeclContext *dc,
-                             GenericIdentTypeRepr *generic,
+  Type applyGenericArguments(Type type, TypeDecl *decl, SourceLoc loc,
+                             DeclContext *dc, GenericIdentTypeRepr *generic,
                              bool isGenericSignature,
                              GenericTypeResolver *resolver);
 
@@ -727,7 +804,8 @@ public:
   /// number of generic arguments given, whereas applyGenericArguments emits
   /// diagnostics in those cases.
   ///
-  /// \param unbound The unbound generic type to which to apply arguments.
+  /// \param type The unbound generic type to which to apply arguments.
+  /// \param decl The declaration of the type.
   /// \param loc The source location for diagnostic reporting.
   /// \param dc The context where the arguments are applied.
   /// \param genericArgs The list of generic arguments to apply to the type.
@@ -739,8 +817,8 @@ public:
   /// error.
   ///
   /// \see applyGenericArguments
-  Type applyUnboundGenericArguments(UnboundGenericType *unbound, SourceLoc loc,
-                                    DeclContext *dc,
+  Type applyUnboundGenericArguments(Type type, GenericTypeDecl *decl,
+                                    SourceLoc loc, DeclContext *dc,
                                     MutableArrayRef<TypeLoc> genericArgs,
                                     bool isGenericSignature,
                                     GenericTypeResolver *resolver);
@@ -890,11 +968,6 @@ public:
     handleExternalDecl(nominal);
   }
 
-  /// Determine attributes for the given function and curry level, with a level
-  /// of 0 indicating the innermost function.
-  AnyFunctionType::ExtInfo
-  applyFunctionTypeAttributes(AbstractFunctionDecl *func, unsigned i);
-
   /// Infer default value witnesses for all requirements in the given protocol.
   void inferDefaultWitnesses(ProtocolDecl *proto);
 
@@ -902,6 +975,11 @@ public:
   /// is usable for the given type.
   bool isProtocolExtensionUsable(DeclContext *dc, Type type,
                                  ExtensionDecl *protocolExtension) override;
+
+  void markInvalidGenericSignature(ValueDecl *VD);
+
+  /// Configure the interface type of a function declaration.
+  void configureInterfaceType(AbstractFunctionDecl *func);
 
   /// Validate the signature of a generic function.
   ///
@@ -943,6 +1021,12 @@ public:
                       GenericSignature *outerSignature,
                       std::function<bool(ArchetypeBuilder &)> inferRequirements,
                       bool &invalid);
+
+  /// Finalize the given generic parameter list, assigning archetypes to
+  /// the generic parameters.
+  void finalizeGenericParamList(ArchetypeBuilder &builder,
+                                GenericParamList *genericParams,
+                                DeclContext *dc);
 
   /// Validate the signature of a generic type.
   ///
@@ -1013,6 +1097,13 @@ public:
   /// \brief Add the RawRepresentable, Equatable, and Hashable methods to an
   /// enum with a raw type.
   void addImplicitEnumConformances(EnumDecl *ED);
+
+  /// Ensure that the specified \c storage has accessors.
+  ///
+  /// \param wantMaterializeForSet Whether we need materializeForSet
+  /// synthesized.
+  void synthesizeAccessorsForStorage(AbstractStorageDecl *storage,
+                                     bool wantMaterializeForSet);
 
   /// The specified AbstractStorageDecl \c storage was just found to satisfy
   /// the protocol property \c requirement.  Ensure that it has the full
@@ -1097,7 +1188,9 @@ public:
   /// \param convertType The type that the expression is being converted to,
   /// or null if the expression is standalone.  If the 'ConvertTypeIsOnlyAHint'
   /// option is specified, then this is only a hint, it doesn't produce a full
-  /// conversion constraint.
+  /// conversion constraint. The location information is only used for
+  /// diagnostics should the conversion fail; it is safe to pass a TypeLoc
+  /// without location information.
   ///
   /// \param options Options that control how type checking is performed.
   ///
@@ -1105,16 +1198,21 @@ public:
   /// events in the type checking of this expression, and which can introduce
   /// additional constraints.
   ///
+  /// \param baseCS If this type checking process is the simplification of
+  /// another constraint system, set the original constraint system. \c null
+  /// otherwise
+  ///
   /// \returns true if an error occurred, false otherwise.
   bool typeCheckExpression(Expr *&expr, DeclContext *dc,
-                           Type convertType = Type(),
+                           TypeLoc convertType = TypeLoc(),
                            ContextualTypePurpose convertTypePurpose =CTP_Unused,
                            TypeCheckExprOptions options =TypeCheckExprOptions(),
-                           ExprTypeCheckListener *listener = nullptr);
+                           ExprTypeCheckListener *listener = nullptr,
+                           constraints::ConstraintSystem *baseCS = nullptr);
 
   bool typeCheckExpression(Expr *&expr, DeclContext *dc,
                            ExprTypeCheckListener *listener) {
-    return typeCheckExpression(expr, dc, Type(), CTP_Unused,
+    return typeCheckExpression(expr, dc, TypeLoc(), CTP_Unused,
                                TypeCheckExprOptions(), listener);
   }
 
@@ -1123,6 +1221,9 @@ public:
   /// applying the solution.
   ///
   /// \param expr The expression to type-check.
+  ///
+  /// \param referencedDecl Will be set to the declaration that is referenced by
+  /// the expression.
   ///
   /// \param allowFreeTypeVariables Whether free type variables are allowed in
   /// the solution, and what to do with them.
@@ -1135,6 +1236,7 @@ public:
   /// FIXME: expr may still be modified...
   Optional<Type> getTypeOfExpressionWithoutApplying(
       Expr *&expr, DeclContext *dc,
+      ConcreteDeclRef &referencedDecl,
       FreeTypeVariableBinding allowFreeTypeVariables =
                               FreeTypeVariableBinding::Disallow,
       ExprTypeCheckListener *listener = nullptr);
@@ -1147,12 +1249,14 @@ public:
   /// \param expr The expression to type-check, which will be modified in
   /// place.
   ///
-  /// \param convertType The type that the expression is being converted to,
-  /// or null if the expression is standalone.
-  ///
   /// \returns true if an error occurred, false otherwise.
-  bool typeCheckExpressionShallow(Expr *&expr, DeclContext *dc,
-                                  Type convertType = Type());
+  bool typeCheckExpressionShallow(Expr *&expr, DeclContext *dc);
+
+  /// Check the key-path expression.
+  ///
+  /// Returns the type of the last component of the key-path.
+  Optional<Type> checkObjCKeyPathExpr(DeclContext *dc, ObjCKeyPathExpr *expr,
+                                      bool requireResultType = false);
 
   /// \brief Type check whether the given type declaration includes members of
   /// unsupported recursive value types.
@@ -1339,9 +1443,12 @@ public:
   ///
   /// \param expr The expression, which will be updated in place.
   /// \param type The type to convert to.
+  /// \param typeFromPattern Optionally, the caller can specify the pattern
+  ///   from where the toType is derived, so that we can deliver better fixit.
   ///
   /// \returns true if an error occurred, false otherwise.
-  bool convertToType(Expr *&expr, Type type, DeclContext *dc);
+  bool convertToType(Expr *&expr, Type type, DeclContext *dc,
+                     Optional<Pattern*> typeFromPattern = None);
 
   /// \brief Coerce the given expression to an rvalue, if it isn't already.
   Expr *coerceToRValue(Expr *expr);
@@ -1464,8 +1571,37 @@ public:
                           ProtocolConformance **Conformance = nullptr,
                           SourceLoc ComplainLoc = SourceLoc());
 
+  /// Completely check the given conformance.
+  void checkConformance(NormalProtocolConformance *conformance);
+
+  /// Check all of the conformances in the given context.
+  void checkConformancesInContext(DeclContext *dc,
+                                  IterableDeclContext *idc);
+
+  /// Find the @objc requirement that are witnessed by the given
+  /// declaration.
+  ///
+  /// \param onlyFirstRequirement If true, only returns the first such
+  /// requirement, rather than all of them.
+  ///
+  /// \returns the set of requirements to which the given witness is a
+  /// witness.
+  llvm::TinyPtrVector<ValueDecl *> findWitnessedObjCRequirements(
+                                     const ValueDecl *witness,
+                                     bool onlyFirstRequirement);
+
   /// Mark any _ObjectiveCBridgeable conformances in the given type as "used".
   void useObjectiveCBridgeableConformances(DeclContext *dc, Type type);
+
+  /// Mark any _BridgedNSError/_BridgedStoredNSError/related
+  /// conformances in the given type as "used".
+  void useBridgedNSErrorConformances(DeclContext *dc, Type type);
+
+  /// If this bound-generic type is bridged, mark any
+  /// _ObjectiveCBridgeable conformances in the generic arguments of
+  /// the given type as "used".
+  void useObjectiveCBridgeableConformancesOfArgs(DeclContext *dc,
+                                                 BoundGenericType *bound);
 
   /// Derive an implicit declaration to satisfy a requirement of a derived
   /// protocol conformance.
@@ -1547,19 +1683,26 @@ public:
                                    Identifier name, SourceLoc nameLoc,
                                    LookupTypeResult &lookup);
 
+  void diagnoseUnavailableOverride(ValueDecl *override,
+                                   const ValueDecl *base,
+                                   const AvailableAttr *attr);
+
   /// Emit a diagnostic for references to declarations that have been
   /// marked as unavailable, either through "unavailable" or "obsoleted:".
   bool diagnoseExplicitUnavailability(const ValueDecl *D,
                                       SourceRange R,
-                                      const DeclContext *DC);
+                                      const DeclContext *DC,
+                                      const ApplyExpr *call);
+
+  /// Emit a diagnostic for references to declarations that have been
+  /// marked as unavailable, either through "unavailable" or "obsoleted:".
+  bool diagnoseExplicitUnavailability(
+      const ValueDecl *D,
+      SourceRange R,
+      const DeclContext *DC,
+      llvm::function_ref<void(InFlightDiagnostic &)> attachRenameFixIts);
 
   /// @}
-
-  /// Fix the name of the given function to the target name, attaching
-  /// Fix-Its to the provided in-flight diagnostic.
-  void fixAbstractFunctionNames(InFlightDiagnostic &diag,
-                                AbstractFunctionDecl *func,
-                                DeclName targetName);
 
   /// \name Overload resolution
   ///
@@ -1605,6 +1748,9 @@ public:
 
   DeclName getObjectLiteralConstructorName(ObjectLiteralExpr *expr);
 
+  Type getObjectLiteralParameterType(ObjectLiteralExpr *expr,
+                                     ConstructorDecl *ctor);
+
   /// Get the module appropriate for looking up standard library types.
   ///
   /// This is "Swift", if that module is imported, or the current module if
@@ -1621,7 +1767,6 @@ public:
   ///
   /// Routines that perform lazy resolution as required for AST operations.
   /// @{
-  void checkConformance(NormalProtocolConformance *conformance) override;
   void resolveTypeWitness(const NormalProtocolConformance *conformance,
                           AssociatedTypeDecl *assocType) override;
   void resolveWitness(const NormalProtocolConformance *conformance,
@@ -1708,8 +1853,7 @@ public:
   /// Checks an "ignored" expression to see if it's okay for it to be ignored.
   ///
   /// An ignored expression is one that is not nested within a larger
-  /// expression or statement. The warning from the \@warn_unused_result
-  /// attribute is produced here.
+  /// expression or statement.
   void checkIgnoredExpr(Expr *E);
 
   // Emits a diagnostic, if necessary, for a reference to a declaration
@@ -1742,6 +1886,11 @@ public:
   /// Returns true if the reference or any of its parents is an
   /// unavailable (or obsoleted) declaration.
   bool isInsideUnavailableDeclaration(SourceRange ReferenceRange,
+                                      const DeclContext *DC);
+
+  /// Returns true if the reference is lexically contained in a declaration
+  /// that is deprecated on all deployment targets.
+  bool isInsideDeprecatedDeclaration(SourceRange ReferenceRange,
                                      const DeclContext *DC);
 
   /// Returns the availability attribute indicating deprecation if the
@@ -1755,8 +1904,7 @@ public:
                           const DeclContext *ReferenceDC,
                           const AvailableAttr *Attr,
                           DeclName Name,
-              std::function<void(InFlightDiagnostic&)> extraInfoHandler =
-                          [](InFlightDiagnostic&){});
+                          const ApplyExpr *Call);
   /// @}
 
   /// If LangOptions::DebugForbidTypecheckPrefix is set and the given decl
@@ -1799,6 +1947,12 @@ public:
                                               ConstructorDecl *ctorDecl,
                                               bool SuppressDiagnostics);
 
+  /// Attempt to omit needless words from the name of the given declaration.
+  Optional<DeclName> omitNeedlessWords(AbstractFunctionDecl *afd);
+
+  /// Attempt to omit needless words from the name of the given declaration.
+  Optional<Identifier> omitNeedlessWords(VarDecl *var);
+
   /// Check for needless words in the name of the given function/constructor.
   void checkOmitNeedlessWords(AbstractFunctionDecl *afd);
 
@@ -1811,6 +1965,19 @@ public:
 
   /// Check for needless words in the member reference.
   void checkOmitNeedlessWords(MemberRefExpr *memberRef);
+
+  /// Check for a typo correction.
+  void performTypoCorrection(DeclContext *DC,
+                             DeclRefKind refKind,
+                             Type baseTypeOrNull,
+                             DeclName name,
+                             SourceLoc lookupLoc,
+                             NameLookupOptions lookupOptions,
+                             LookupResult &result,
+                             unsigned maxResults = 4);
+
+  void noteTypoCorrection(DeclName name, DeclNameLoc nameLoc,
+                          const LookupResult::Result &suggestion);
 };
 
 /// \brief RAII object that cleans up the given expression if not explicitly

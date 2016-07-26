@@ -126,7 +126,7 @@ struct d0100_FooStruct {
   func instanceFunc2(a: Int, b: inout Double) {}
 // PASS_COMMON-NEXT: {{^}}  func instanceFunc2(a: Int, b: inout Double){{$}}
 
-  func instanceFunc3(a: Int, let b: Double) { var a = a; a = 1; _ = a }
+  func instanceFunc3(a: Int, b: Double) { var a = a; a = 1; _ = a }
 // PASS_COMMON-NEXT: {{^}}  func instanceFunc3(a: Int, b: Double){{$}}
 
   func instanceFuncWithDefaultArg1(a: Int = 0) {}
@@ -478,10 +478,10 @@ protocol d0130_TestProtocol {
 @objc protocol d0140_TestObjCProtocol {
 // PASS_COMMON-LABEL: {{^}}@objc protocol d0140_TestObjCProtocol {{{$}}
 
-  optional var property1: Int { get }
+  @objc optional var property1: Int { get }
 // PASS_COMMON-NEXT: {{^}}  @objc optional var property1: Int { get }{{$}}
 
-  optional func protocolFunc1()
+  @objc optional func protocolFunc1()
 // PASS_COMMON-NEXT: {{^}}  @objc optional func protocolFunc1(){{$}}
 }
 
@@ -490,24 +490,6 @@ protocol d0150_TestClassProtocol : class {}
 
 @objc protocol d0151_TestClassProtocol {}
 // PASS_COMMON-LABEL: {{^}}@objc protocol d0151_TestClassProtocol {{{$}}
-
-
-@noreturn @_silgen_name("exit") func d0160_testNoReturn()
-// PASS_COMMON-LABEL: {{^}}@_silgen_name("exit"){{$}}
-// PASS_COMMON-NEXT: {{^}}@noreturn func d0160_testNoReturn(){{$}}
-
-@noreturn func d0161_testNoReturn() { d0160_testNoReturn() }
-// PASS_COMMON-LABEL: {{^}}@noreturn func d0161_testNoReturn(){{$}}
-
-class d0162_TestNoReturn {
-// PASS_COMMON-LABEL: {{^}}class d0162_TestNoReturn {{{$}}
-
-  @noreturn func instanceFunc() { d0160_testNoReturn() }
-// PASS_COMMON-NEXT: {{^}}  @noreturn func instanceFunc(){{$}}
-
-  @noreturn func classFunc() {d0160_testNoReturn() }
-// PASS_COMMON-NEXT: {{^}}  @noreturn func classFunc(){{$}}
-}
 
 
 class d0170_TestAvailability {
@@ -563,6 +545,9 @@ class d0170_TestAvailability {
 
   @IBInspectable var inspectableProp: Int = 0
 // PASS_EXPLODE_PATTERN-NEXT: {{^}}  @IBInspectable @objc var inspectableProp: Int{{$}}
+
+  @GKInspectable var inspectableProp2: Int = 0
+// PASS_EXPLODE_PATTERN-NEXT: {{^}}  @GKInspectable @objc var inspectableProp2: Int{{$}}
 }
 
 struct d0190_LetVarDecls {
@@ -600,6 +585,7 @@ struct d0200_EscapedIdentifiers {
   }
 // PASS_COMMON-NEXT: {{^}}  enum `enum` {{{$}}
 // PASS_COMMON-NEXT: {{^}}    case `case`{{$}}
+// PASS_COMMON-NEXT: {{^}}    infix static func ==(a: d0200_EscapedIdentifiers.`enum`, b: d0200_EscapedIdentifiers.`enum`) -> Bool
 // PASS_COMMON-NEXT: {{^}}    var hashValue: Int { get }{{$}}
 // PASS_COMMON-NEXT: {{^}}  }{{$}}
 
@@ -1021,6 +1007,7 @@ enum d2000_EnumDecl1 {
 // PASS_COMMON: {{^}}enum d2000_EnumDecl1 {{{$}}
 // PASS_COMMON-NEXT: {{^}}  case ED1_First{{$}}
 // PASS_COMMON-NEXT: {{^}}  case ED1_Second{{$}}
+// PASS_COMMON-NEXT: {{^}}  infix static func ==(a: d2000_EnumDecl1, b: d2000_EnumDecl1) -> Bool
 // PASS_COMMON-NEXT: {{^}}  var hashValue: Int { get }{{$}}
 // PASS_COMMON-NEXT: {{^}}}{{$}}
 
@@ -1106,10 +1093,10 @@ postfix operator <*> {}
 // PASS_2500-NEXT: {{^}}}{{$}}
 
 protocol d2600_ProtocolWithOperator1 {
-  postfix func <*>(_: Int)
+  static postfix func <*>(_: Int)
 }
 // PASS_2500: {{^}}protocol d2600_ProtocolWithOperator1 {{{$}}
-// PASS_2500-NEXT: {{^}}  postfix func <*>(_: Int){{$}}
+// PASS_2500-NEXT: {{^}}  postfix static func <*>(_: Int){{$}}
 // PASS_2500-NEXT: {{^}}}{{$}}
 
 struct d2601_TestAssignment {}
@@ -1183,35 +1170,35 @@ struct d2800_ProtocolWithAssociatedType1Impl : d2700_ProtocolWithAssociatedType1
 struct GenericParams1<
     StructGenericFoo : FooProtocol,
     StructGenericFooX : FooClass,
-    StructGenericBar : protocol<FooProtocol, BarProtocol>,
+    StructGenericBar : FooProtocol & BarProtocol,
     StructGenericBaz> {
-// PASS_ONE_LINE_TYPE-DAG: {{^}}struct GenericParams1<StructGenericFoo : FooProtocol, StructGenericFooX : FooClass, StructGenericBar : protocol<BarProtocol, FooProtocol>, StructGenericBaz> {{{$}}
+// PASS_ONE_LINE_TYPE-DAG: {{^}}struct GenericParams1<StructGenericFoo : FooProtocol, StructGenericFooX : FooClass, StructGenericBar : BarProtocol & FooProtocol, StructGenericBaz> {{{$}}
 // FIXME: in protocol compositions protocols are listed in reverse order.
 //
-// PASS_ONE_LINE_TYPEREPR-DAG: {{^}}struct GenericParams1<StructGenericFoo : FooProtocol, StructGenericFooX : FooClass, StructGenericBar : protocol<FooProtocol, BarProtocol>, StructGenericBaz> {{{$}}
+// PASS_ONE_LINE_TYPEREPR-DAG: {{^}}struct GenericParams1<StructGenericFoo : FooProtocol, StructGenericFooX : FooClass, StructGenericBar : FooProtocol & BarProtocol, StructGenericBaz> {{{$}}
   init<
       GenericFoo : FooProtocol,
       GenericFooX : FooClass,
-      GenericBar : protocol<FooProtocol, BarProtocol>,
+      GenericBar : FooProtocol & BarProtocol,
       GenericBaz>(a: StructGenericFoo, b: StructGenericBar, c: StructGenericBaz,
                   d: GenericFoo, e: GenericFooX, f: GenericBar, g: GenericBaz)
   {}
-// PASS_ONE_LINE_TYPE-DAG: {{^}}  init<GenericFoo : FooProtocol, GenericFooX : FooClass, GenericBar : protocol<BarProtocol, FooProtocol>, GenericBaz>(a: StructGenericFoo, b: StructGenericBar, c: StructGenericBaz, d: GenericFoo, e: GenericFooX, f: GenericBar, g: GenericBaz){{$}}
+// PASS_ONE_LINE_TYPE-DAG: {{^}}  init<GenericFoo : FooProtocol, GenericFooX : FooClass, GenericBar : BarProtocol & FooProtocol, GenericBaz>(a: StructGenericFoo, b: StructGenericBar, c: StructGenericBaz, d: GenericFoo, e: GenericFooX, f: GenericBar, g: GenericBaz){{$}}
 // FIXME: in protocol compositions protocols are listed in reverse order.
 //
-// PASS_ONE_LINE_TYPEREPR-DAG: {{^}}  init<GenericFoo : FooProtocol, GenericFooX : FooClass, GenericBar : protocol<FooProtocol, BarProtocol>, GenericBaz>(a: StructGenericFoo, b: StructGenericBar, c: StructGenericBaz, d: GenericFoo, e: GenericFooX, f: GenericBar, g: GenericBaz){{$}}
+// PASS_ONE_LINE_TYPEREPR-DAG: {{^}}  init<GenericFoo : FooProtocol, GenericFooX : FooClass, GenericBar : FooProtocol & BarProtocol, GenericBaz>(a: StructGenericFoo, b: StructGenericBar, c: StructGenericBaz, d: GenericFoo, e: GenericFooX, f: GenericBar, g: GenericBaz){{$}}
 
   func genericParams1<
       GenericFoo : FooProtocol,
       GenericFooX : FooClass,
-      GenericBar : protocol<FooProtocol, BarProtocol>,
+      GenericBar : FooProtocol & BarProtocol,
       GenericBaz>(a: StructGenericFoo, b: StructGenericBar, c: StructGenericBaz,
                   d: GenericFoo, e: GenericFooX, f: GenericBar, g: GenericBaz)
   {}
-// PASS_ONE_LINE_TYPE-DAG: {{^}}  func genericParams1<GenericFoo : FooProtocol, GenericFooX : FooClass, GenericBar : protocol<BarProtocol, FooProtocol>, GenericBaz>(a: StructGenericFoo, b: StructGenericBar, c: StructGenericBaz, d: GenericFoo, e: GenericFooX, f: GenericBar, g: GenericBaz){{$}}
+// PASS_ONE_LINE_TYPE-DAG: {{^}}  func genericParams1<GenericFoo : FooProtocol, GenericFooX : FooClass, GenericBar : BarProtocol & FooProtocol, GenericBaz>(a: StructGenericFoo, b: StructGenericBar, c: StructGenericBaz, d: GenericFoo, e: GenericFooX, f: GenericBar, g: GenericBaz){{$}}
 // FIXME: in protocol compositions protocols are listed in reverse order.
 //
-// PASS_ONE_LINE_TYPEREPR-DAG: {{^}}  func genericParams1<GenericFoo : FooProtocol, GenericFooX : FooClass, GenericBar : protocol<FooProtocol, BarProtocol>, GenericBaz>(a: StructGenericFoo, b: StructGenericBar, c: StructGenericBaz, d: GenericFoo, e: GenericFooX, f: GenericBar, g: GenericBaz){{$}}
+// PASS_ONE_LINE_TYPEREPR-DAG: {{^}}  func genericParams1<GenericFoo : FooProtocol, GenericFooX : FooClass, GenericBar : FooProtocol & BarProtocol, GenericBaz>(a: StructGenericFoo, b: StructGenericBar, c: StructGenericBaz, d: GenericFoo, e: GenericFooX, f: GenericBar, g: GenericBaz){{$}}
 }
 
 struct GenericParams2<T : FooProtocol where T : BarProtocol> {}
@@ -1223,11 +1210,11 @@ struct GenericParams3<T : FooProtocol where T : BarProtocol, T : QuxProtocol> {}
 struct GenericParams4<T : QuxProtocol where T.Qux : FooProtocol> {}
 // PASS_ONE_LINE-DAG: {{^}}struct GenericParams4<T : QuxProtocol where T.Qux : FooProtocol> {{{$}}
 
-struct GenericParams5<T : QuxProtocol where T.Qux : protocol<FooProtocol, BarProtocol>> {}
-// PREFER_TYPE_PRINTING: {{^}}struct GenericParams5<T : QuxProtocol where T.Qux : protocol<BarProtocol, FooProtocol>> {{{$}}
+struct GenericParams5<T : QuxProtocol where T.Qux : FooProtocol & BarProtocol> {}
+// PREFER_TYPE_PRINTING: {{^}}struct GenericParams5<T : QuxProtocol where T.Qux : BarProtocol & FooProtocol> {{{$}}
 // FIXME: in protocol compositions protocols are listed in reverse order.
 //
-// PREFER_TYPE_REPR_PRINTING: {{^}}struct GenericParams5<T : QuxProtocol where T.Qux : protocol<FooProtocol, BarProtocol>> {{{$}}
+// PREFER_TYPE_REPR_PRINTING: {{^}}struct GenericParams5<T : QuxProtocol where T.Qux : FooProtocol & BarProtocol> {{{$}}
 
 struct GenericParams6<T : QuxProtocol, U : QuxProtocol where T.Qux == U.Qux> {}
 // Because of the same type conformance, 'T.Qux' and 'U.Qux' types are
@@ -1284,31 +1271,17 @@ struct d2900_TypeSugar1 {
 // PASS_COMMON-NEXT: {{^}}  init(){{$}}
 // PASS_COMMON-NEXT: {{^}}}{{$}}
 
-// @warn_unused_result attribute
-public struct ArrayThingy {
-    // PASS_PRINT_AST: @warn_unused_result(mutable_variant: "sort")
-    // PASS_PRINT_AST-NEXT: public func sort() -> ArrayThingy
-    @warn_unused_result(mutable_variant: "sort")
-    public func sort() -> ArrayThingy { return self }
+// @discardableResult attribute
+public struct DiscardableThingy {
+    // PASS_PRINT_AST: @discardableResult
+    // PASS_PRINT_AST-NEXT: public init()
+    @discardableResult
+    public init() {}
 
-    public mutating func sort() { }
-
-    // PASS_PRINT_AST: @warn_unused_result(message: "dummy", mutable_variant: "reverseInPlace")
-    // PASS_PRINT_AST-NEXT: public func reverse() -> ArrayThingy
-    @warn_unused_result(message: "dummy", mutable_variant: "reverseInPlace")
-    public func reverse() -> ArrayThingy { return self }
-
-    public mutating func reverseInPlace() { }
-
-    // PASS_PRINT_AST: @warn_unused_result
-    // PASS_PRINT_AST-NEXT: public func mineGold() -> Int
-    @warn_unused_result
-    public func mineGold() -> Int { return 0 }
-
-    // PASS_PRINT_AST: @warn_unused_result(message: "oops")
-    // PASS_PRINT_AST-NEXT: public func mineCopper() -> Int
-    @warn_unused_result(message: "oops")
-    public func mineCopper() -> Int { return 0 }
+    // PASS_PRINT_AST: @discardableResult
+    // PASS_PRINT_AST-NEXT: public func useless() -> Int
+    @discardableResult
+    public func useless() -> Int { return 0 }
 }
 
 
@@ -1316,18 +1289,23 @@ public struct ArrayThingy {
 
 
 // <rdar://problem/19775868> Swift 1.2b1: Header gen puts @autoclosure in the wrong place
-// PASS_PRINT_AST: public func ParamAttrs1(@autoclosure a: () -> ())
-public func ParamAttrs1(@autoclosure a : () -> ()) {
+// PASS_PRINT_AST: public func ParamAttrs1(a: @autoclosure () -> ())
+public func ParamAttrs1(a : @autoclosure () -> ()) {
   a()
 }
 
-// PASS_PRINT_AST: public func ParamAttrs2(@autoclosure(escaping) a: () -> ())
-public func ParamAttrs2(@autoclosure(escaping) a : () -> ()) {
+// PASS_PRINT_AST: public func ParamAttrs2(a: @autoclosure(escaping) () -> ())
+public func ParamAttrs2(a : @autoclosure(escaping) () -> ()) {
   a()
 }
 
-// PASS_PRINT_AST: public func ParamAttrs3(@noescape a: () -> ())
-public func ParamAttrs3(@noescape a : () -> ()) {
+// PASS_PRINT_AST: public func ParamAttrs3(a: @noescape () -> ())
+public func ParamAttrs3(a : @noescape () -> ()) {
+  a()
+}
+
+// PASS_PRINT_AST: public func ParamAttrs4(a: @escaping () -> ())
+public func ParamAttrs4(a : @escaping () -> ()) {
   a()
 }
 

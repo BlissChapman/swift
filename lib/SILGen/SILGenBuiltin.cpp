@@ -85,7 +85,7 @@ static ManagedValue emitBuiltinRelease(SILGenFunction &gen,
   // The value was produced at +1, so to produce an unbalanced
   // release we need to leave the cleanup intact and then do a *second*
   // release.
-  gen.B.createReleaseValue(loc, args[0].getValue());
+  gen.B.createReleaseValue(loc, args[0].getValue(), Atomicity::Atomic);
   return ManagedValue::forUnmanaged(gen.emitEmptyTuple(loc));    
 }
 
@@ -97,7 +97,7 @@ static ManagedValue emitBuiltinAutorelease(SILGenFunction &gen,
                                            SGFContext C) {
   // The value was produced at +1, so to produce an unbalanced
   // autorelease we need to leave the cleanup intact.
-  gen.B.createAutoreleaseValue(loc, args[0].getValue());
+  gen.B.createAutoreleaseValue(loc, args[0].getValue(), Atomicity::Atomic);
   return ManagedValue::forUnmanaged(gen.emitEmptyTuple(loc));    
 }
 
@@ -128,7 +128,8 @@ static ManagedValue emitBuiltinTryPin(SILGenFunction &gen,
   // The value was produced at +1, but pinning is only a conditional
   // retain, so we have to leave the cleanup in place.  TODO: try to
   // emit the argument at +0.
-  SILValue result = gen.B.createStrongPin(loc, args[0].getValue());
+  SILValue result =
+      gen.B.createStrongPin(loc, args[0].getValue(), Atomicity::Atomic);
 
   // The handle, if non-null, is effectively +1.
   return gen.emitManagedRValueWithCleanup(result);
@@ -144,7 +145,7 @@ static ManagedValue emitBuiltinUnpin(SILGenFunction &gen,
 
   if (requireIsOptionalNativeObject(gen, loc, subs[0].getReplacement())) {
     // Unpinning takes responsibility for the +1 handle.
-    gen.B.createStrongUnpin(loc, args[0].forward(gen));
+    gen.B.createStrongUnpin(loc, args[0].forward(gen), Atomicity::Atomic);
   }
 
   return ManagedValue::forUnmanaged(gen.emitEmptyTuple(loc));
@@ -157,7 +158,8 @@ static ManagedValue emitBuiltinLoadOrTake(SILGenFunction &gen,
                                           ArrayRef<ManagedValue> args,
                                           CanFunctionType formalApplyType,
                                           SGFContext C,
-                                          IsTake_t isTake) {
+                                          IsTake_t isTake,
+                                          bool isStrict) {
   assert(substitutions.size() == 1 && "load should have single substitution");
   assert(args.size() == 1 && "load should have a single argument");
   
@@ -169,7 +171,8 @@ static ManagedValue emitBuiltinLoadOrTake(SILGenFunction &gen,
 
   // Convert the pointer argument to a SIL address.
   SILValue addr = gen.B.createPointerToAddress(loc, args[0].getUnmanagedValue(),
-                                               loadedType.getAddressType());
+                                               loadedType.getAddressType(),
+                                               isStrict);
   // Perform the load.
   return gen.emitLoad(loc, addr, rvalueTL, C, isTake);
 }
@@ -181,7 +184,19 @@ static ManagedValue emitBuiltinLoad(SILGenFunction &gen,
                                     CanFunctionType formalApplyType,
                                     SGFContext C) {
   return emitBuiltinLoadOrTake(gen, loc, substitutions, args,
-                               formalApplyType, C, IsNotTake);
+                               formalApplyType, C, IsNotTake,
+                               /*isStrict*/ true);
+}
+
+static ManagedValue emitBuiltinLoadRaw(SILGenFunction &gen,
+                                       SILLocation loc,
+                                       ArrayRef<Substitution> substitutions,
+                                       ArrayRef<ManagedValue> args,
+                                       CanFunctionType formalApplyType,
+                                       SGFContext C) {
+  return emitBuiltinLoadOrTake(gen, loc, substitutions, args,
+                               formalApplyType, C, IsNotTake,
+                               /*isStrict*/ false);
 }
 
 static ManagedValue emitBuiltinTake(SILGenFunction &gen,
@@ -191,7 +206,7 @@ static ManagedValue emitBuiltinTake(SILGenFunction &gen,
                                     CanFunctionType formalApplyType,
                                     SGFContext C) {
   return emitBuiltinLoadOrTake(gen, loc, substitutions, args,
-                               formalApplyType, C, IsTake);
+                               formalApplyType, C, IsTake, /*isStrict*/ true);
 }
 
 /// Specialized emitter for Builtin.destroy.
@@ -216,7 +231,8 @@ static ManagedValue emitBuiltinDestroy(SILGenFunction &gen,
   // Convert the pointer argument to a SIL address.
   SILValue addr =
     gen.B.createPointerToAddress(loc, args[1].getUnmanagedValue(),
-                                 destroyType.getAddressType());
+                                 destroyType.getAddressType(),
+                                 /*isStrict*/ true);
   
   // Destroy the value indirectly. Canonicalization will promote to loads
   // and releases if appropriate.
@@ -242,7 +258,8 @@ static ManagedValue emitBuiltinAssign(SILGenFunction &gen,
   // Convert the destination pointer argument to a SIL address.
   SILValue addr = gen.B.createPointerToAddress(loc,
                                                args.back().getUnmanagedValue(),
-                                               assignType.getAddressType());
+                                               assignType.getAddressType(),
+                                               /*isStrict*/ true);
   
   // Build the value to be assigned, reconstructing tuples if needed.
   RValue src(args.slice(0, args.size() - 1), assignFormalType);
@@ -266,8 +283,9 @@ static ManagedValue emitBuiltinInit(SILGenFunction &gen,
   auto &formalTL = gen.getTypeLowering(formalType);
 
   SILValue addr = gen.emitRValueAsSingleValue(args[1]).getUnmanagedValue();
-  addr = gen.B.createPointerToAddress(loc, addr,
-                                 formalTL.getLoweredType().getAddressType());
+  addr = gen.B.createPointerToAddress(
+    loc, addr, formalTL.getLoweredType().getAddressType(),
+    /*isStrict*/ true);
 
   TemporaryInitialization init(addr, CleanupHandle::invalid());
   gen.emitExprInto(args[0], &init);
@@ -765,6 +783,25 @@ emitBuiltinIsUniqueOrPinned_native(SILGenFunction &gen,
   auto toAddr = gen.B.createUncheckedAddrCast(loc, args[0].getValue(), ToType);
   SILValue result = gen.B.createIsUniqueOrPinned(loc, toAddr);
   return ManagedValue::forUnmanaged(result);
+}
+
+static ManagedValue emitBuiltinBindMemory(SILGenFunction &gen,
+                                          SILLocation loc,
+                                          ArrayRef<Substitution> subs,
+                                          ArrayRef<ManagedValue> args,
+                                          CanFunctionType formalApplyType,
+                                          SGFContext C) {
+  assert(subs.size() == 1 && "bindMemory should have a single substitution");
+  assert(args.size() == 3 && "bindMemory should have three argument");
+
+  // The substitution determines the element type for bound memory.
+  CanType boundFormalType = subs[0].getReplacement()->getCanonicalType();
+  SILType boundType = gen.getLoweredType(boundFormalType);
+
+  gen.B.createBindMemory(loc, args[0].getValue(),
+                         args[1].getValue(), boundType);
+
+  return ManagedValue::forUnmanaged(gen.emitEmptyTuple(loc));
 }
 
 /// Specialized emitter for type traits.

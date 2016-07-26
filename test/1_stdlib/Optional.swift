@@ -4,24 +4,6 @@
 import StdlibUnittest
 import Swift
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-import SwiftPrivate
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
-
-class DeinitTester {
-  private let onDeinit: () -> ()
-
-  init(onDeinit: () -> ()) {
-    self.onDeinit = onDeinit
-  }
-  deinit {
-    onDeinit()
-  }
-}
 
 let OptionalTests = TestSuite("Optional")
 
@@ -72,10 +54,13 @@ OptionalTests.test("nil comparison") {
   }
 
   expectEqual("forced extraction: 1.", "forced extraction: \(x!).")
-  expectEqual("forced extraction use: 2.", "forced extraction use: \(x!.successor()).")
+  expectEqual(
+    "forced extraction use: 2.",
+    "forced extraction use: \(x!.advanced(by: 1))."
+  )
 }
 
-func testRelation(p: (Int?, Int?) -> Bool) -> [Bool] {
+func testRelation(_ p: (Int?, Int?) -> Bool) -> [Bool] {
   typealias optPair = (Int?, Int?)
   
   let relationships: [optPair] = [
@@ -88,11 +73,55 @@ func testRelation(p: (Int?, Int?) -> Bool) -> [Bool] {
 OptionalTests.test("Equatable") {
   expectEqual([true, false, false, false, false, true], testRelation(==))
   expectEqual([false, true, true, true, true, false], testRelation(!=))
-  expectEqual([false, true, false, false, true, false], testRelation(<))
+}
+
+OptionalTests.test("CustomReflectable") {
+  // Test with a non-refcountable type.
+  do {
+    let value: OpaqueValue<Int>? = nil
+    var output = ""
+    dump(value, to: &output)
+    expectEqual("- nil\n", output)
+    expectEqual(.optional, Mirror(reflecting: value).displayStyle)
+  }
+  do {
+    let value: OpaqueValue<Int>? = OpaqueValue(1010)
+    var output = ""
+    dump(value, to: &output)
+    let expected =
+      "▿ Optional(StdlibUnittest.OpaqueValue<Swift.Int>(value: 1010, identity: 0))\n" +
+      "  ▿ some: StdlibUnittest.OpaqueValue<Swift.Int>\n" +
+      "    - value: 1010\n" +
+      "    - identity: 0\n"
+    expectEqual(expected, output)
+    expectEqual(.optional, Mirror(reflecting: value).displayStyle)
+  }
+  // Test with a reference type.
+  do {
+    let value: LifetimeTracked? = nil
+    var output = ""
+    dump(value, to: &output)
+    expectEqual("- nil\n", output)
+    expectEqual(.optional, Mirror(reflecting: value).displayStyle)
+  }
+  do {
+    let value: LifetimeTracked? = LifetimeTracked(1010)
+    var output = ""
+    dump(value, to: &output)
+    let expected =
+      "▿ Optional(1010)\n" +
+      "  ▿ some: 1010 #0\n" +
+      "    - value: 1010\n" +
+      "    - identity: 0\n" +
+      "    - serialNumber: 1\n"
+    expectEqual(expected, output)
+    expectEqual(.optional, Mirror(reflecting: value).displayStyle)
+  }
 }
 
 struct X {}
 class C {}
+class D {}
 
 class E : Equatable {}
 func == (_: E, _: E) -> Bool { return true }
@@ -179,7 +208,7 @@ OptionalTests.test("??") {
 }
 
 OptionalTests.test("flatMap") {
-  let half: Int32 -> Int16? =
+  let half: (Int32) -> Int16? =
     { if $0 % 2 == 0 { return Int16($0 / 2) } else { return .none } }
 
   expectOptionalEqual(2 as Int16, half(4))
@@ -190,15 +219,35 @@ OptionalTests.test("flatMap") {
   expectEmpty((3 as Int32?).flatMap(half))
 }
 
+// FIXME: @inline(never) does not inhibit specialization
+
 @inline(never)
-func anyToAny<T, U>(a: T, _ : U.Type) -> U {
+@_semantics("optimize.sil.never")
+func anyToAny<T, U>(_ a: T, _ : U.Type) -> U {
   return a as! U
 }
+
 @inline(never)
-func anyToAnyOrNil<T, U>(a: T, _ : U.Type) -> U? {
+@_semantics("optimize.sil.never")
+func anyToAnyIs<T, U>(_ a: T, _ : U.Type) -> Bool {
+  return a is U
+}
+
+@inline(never)
+@_semantics("optimize.sil.never")
+func anyToAnyIsOptional<T, U>(_ a: T?, _ : U.Type) -> Bool {
+  return a is U?
+}
+
+@inline(never)
+@_semantics("optimize.sil.never")
+func anyToAnyOrNil<T, U>(_ a: T, _ : U.Type) -> U? {
   return a as? U
 }
-func canGenericCast<T, U>(a: T, _ ty : U.Type) -> Bool {
+
+@inline(never)
+@_semantics("optimize.sil.never")
+func canGenericCast<T, U>(_ a: T, _ ty : U.Type) -> Bool {
   return anyToAnyOrNil(a, ty) != nil
 }
 
@@ -210,10 +259,27 @@ OptionalTests.test("Casting Optional") {
   let sx: C? = x
   let nx: C? = nil
   expectTrue(anyToAny(x, Optional<C>.self)! === x)
+  expectTrue(anyToAnyIs(x, Optional<C>.self))
+  expectFalse(anyToAnyIs(x, Optional<D>.self))
+
   expectTrue(anyToAny(sx, C.self) === x)
+  expectTrue(anyToAnyIs(sx, C.self))
+  expectFalse(anyToAnyIs(sx, D.self))
+
   expectTrue(anyToAny(sx, Optional<C>.self)! === x)
+  expectTrue(anyToAnyIs(sx, Optional<C>.self))
+  expectTrue(anyToAnyIsOptional(sx, C.self))
+  expectFalse(anyToAnyIsOptional(sx, D.self))
 
   expectTrue(anyToAny(nx, Optional<C>.self) == nil)
+  expectTrue(anyToAnyIs(nx, Optional<C>.self))
+
+  // You can cast a nil of any type to a nil of any other type
+  // successfully
+  expectTrue(anyToAnyIs(nx, Optional<D>.self))
+
+  expectTrue(anyToAnyIsOptional(nx, C.self))
+
   expectTrue(anyToAnyOrNil(nx, C.self) == nil)
 
   let i = Int.max
@@ -232,20 +298,37 @@ OptionalTests.test("Casting Optional") {
   expectTrue(anyToAnyOrNil(ni, Int.self) == nil)
 
   // Test for SR-459: Weakened optionals don't zero.
-  var deinitRan = false
-  do {
-    var t = DeinitTester { deinitRan = true }
-    _ = anyToAny(Optional(t), CustomDebugStringConvertible.self)
-  }
-  expectTrue(deinitRan)
+  var t = LifetimeTracked(0)
+  _ = anyToAny(Optional(t), CustomDebugStringConvertible.self)
+  expectTrue(anyToAnyIs(Optional(t), CustomDebugStringConvertible.self))
 
   // Test for SR-912: Runtime exception casting an Any nil to an Optional.
   let oi: Int? = nil
   expectTrue(anyToAny(oi as Any, Optional<Int>.self) == nil)
+  expectTrue(anyToAnyIs(oi as Any, Optional<Int>.self))
+
+  // Double-wrapped optional
+  expectTrue(anyToAnyIsOptional(oi as Any, Int.self))
+
   // For good measure test an existential that Optional does not conform to.
   expectTrue(anyToAny(3 as TestExistential, Optional<Int>.self) == 3)
+
+  // Can't do existential + optional wrapping at once for some reason
+  expectTrue(anyToAnyIs(3 as TestExistential, Optional<Int>.self))
+  expectTrue(anyToAnyIsOptional(3 as TestExistential, Int.self))
+
   // And a type that is not convertible to its target.
-  anyToAny(nx as Any, Optional<Int>.self)
+  expectTrue(anyToAny(nx as Any, Optional<Int>.self) == nil)
+  expectTrue(anyToAnyIs(nx as Any, Optional<Int>.self))
+  expectTrue(anyToAnyIsOptional(nx as Any, Int.self))
+
+  expectTrue(anyToAnyOrNil(sx as Any, Optional<Int>.self) == nil)
+  expectFalse(anyToAnyIs(sx as Any, Optional<Int>.self))
+  expectFalse(anyToAnyIsOptional(sx as Any, Int.self))
+
+  // OK to convert nil of any type to optional of any other type
+  expectTrue(anyToAnyIs(Optional<(String, String)>.none, Optional<Bool>.self))
+  expectTrue(anyToAnyIsOptional(Optional<(String, String)>.none, Bool.self))
 }
 
 OptionalTests.test("Casting Optional Traps") {
@@ -269,12 +352,12 @@ class TestString : CustomStringConvertible, CustomDebugStringConvertible {
   }
 }
 class TestStream : Streamable {
-  func write<Target : OutputStream>(to target: inout Target) {
+  func write<Target : TextOutputStream>(to target: inout Target) {
     target.write("AStream")
   }
 }
 
-func debugPrintStr<T>(a: T) -> String {
+func debugPrintStr<T>(_ a: T) -> String {
   var s = ""
   debugPrint(a, terminator: "", to: &s)
   return s
@@ -284,7 +367,7 @@ func debugPrintStr<T>(a: T) -> String {
 // Furthermore, printing an Optional should always print the debug
 // description regardless of whether the wrapper type conforms to an
 // output stream protocol.
-OptionalTests.test("Optional OutputStream") {
+OptionalTests.test("Optional TextOutputStream") {
   let optNoString: TestNoString? = TestNoString()
   expectFalse(optNoString is CustomStringConvertible)
   expectFalse(canGenericCast(optNoString, CustomStringConvertible.self))
@@ -295,20 +378,6 @@ OptionalTests.test("Optional OutputStream") {
   expectEqual(String(optNoString), "Optional(main.TestNoString)")
   expectEqual(debugPrintStr(optNoString), "Optional(main.TestNoString)")
 
-  let iouNoString: TestNoString! = TestNoString()
-  // IUO directly conforms to CustomStringConvertible.
-  // Disabled pending SR-164
-  //   expectTrue(iouNoString is CustomStringConvertible)
-  expectTrue(canGenericCast(iouNoString, CustomStringConvertible.self))
-  expectFalse(iouNoString is Streamable)
-  expectFalse(canGenericCast(iouNoString, Streamable.self))
-  // CustomDebugStringConvertible conformance is a temporary hack.
-  // Disabled pending SR-164
-  //   expectTrue(iouNoString is CustomDebugStringConvertible)
-  expectTrue(canGenericCast(iouNoString, CustomDebugStringConvertible.self))
-  expectEqual(String(iouNoString), "main.TestNoString")
-  expectEqual(debugPrintStr(iouNoString), "main.TestNoString")
-
   let optString: TestString? = TestString()
   expectTrue(optString is CustomStringConvertible)
   expectTrue(canGenericCast(optString, CustomStringConvertible.self))
@@ -317,18 +386,6 @@ OptionalTests.test("Optional OutputStream") {
   expectEqual(String(TestString()), "AString")
   expectEqual(String(optString), "Optional(XString)")
   expectEqual(debugPrintStr(optString), "Optional(XString)")
-
-  let iouString: TestString! = TestString()
-  expectTrue(iouString is CustomStringConvertible)
-  expectTrue(canGenericCast(iouString, CustomStringConvertible.self))
-  // CustomDebugStringConvertible conformance is a temporary hack.
-  expectTrue(iouString is CustomDebugStringConvertible)
-  expectTrue(canGenericCast(iouString, CustomDebugStringConvertible.self))
-  expectEqual(String(iouString), "AString")
-  // FIXME: Ideally the debug output would be "XString", but a reasonable
-  // implementation of that behavior requires conditional conformance.
-  // (directly invoking debugPrint(Any) already works correctly).
-  expectEqual(debugPrintStr(iouString), "AString")
 
   let optStream: TestStream? = TestStream()
   expectTrue(optStream is Streamable)

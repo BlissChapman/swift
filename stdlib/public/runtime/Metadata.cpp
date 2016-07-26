@@ -21,15 +21,22 @@
 #include "swift/Basic/Lazy.h"
 #include "swift/Runtime/HeapObject.h"
 #include "swift/Runtime/Metadata.h"
+#include "swift/Runtime/Mutex.h"
 #include "swift/Strings.h"
 #include "MetadataCache.h"
 #include <algorithm>
 #include <condition_variable>
 #include <new>
 #include <cctype>
+#if defined(_MSC_VER)
+#define WIN32_LEAN_AND_MEAN
+// Avoid defining macro max(), min() which conflict with std::max(), std::min()
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <sys/mman.h>
-#include <pthread.h>
 #include <unistd.h>
+#endif
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Hashing.h"
 #include "ErrorObject.h"
@@ -56,40 +63,94 @@
 using namespace swift;
 using namespace metadataimpl;
 
-void *MetadataAllocator::alloc(size_t size) {
+static uintptr_t swift_pageSize() {
 #if defined(__APPLE__)
-  const uintptr_t pagesizeMask = vm_page_mask;
+  return vm_page_size;
+#elif defined(_MSC_VER)
+  SYSTEM_INFO SystemInfo;
+  GetSystemInfo(&SystemInfo);
+  return SystemInfo.dwPageSize;
 #else
-  static const uintptr_t pagesizeMask = sysconf(_SC_PAGESIZE) - 1;
+  return sysconf(_SC_PAGESIZE);
 #endif
+}
+
+// allocate memory up to a nearby page boundary
+static void *swift_allocateMetadataRoundingToPage(size_t size) {
+  const uintptr_t PageSizeMask = SWIFT_LAZY_CONSTANT(swift_pageSize()) - 1;
+  size = (size + PageSizeMask) & ~PageSizeMask;
+#if defined(_MSC_VER)
+  auto mem = VirtualAlloc(
+      nullptr, size, MEM_TOP_DOWN | MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#else
+  auto mem = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE,
+                  VM_TAG_FOR_SWIFT_METADATA, 0);
+  if (mem == MAP_FAILED)
+    mem = nullptr;
+#endif
+  return mem;
+}
+
+// free memory allocated by swift_allocateMetadataRoundingToPage()
+static void swift_freeMetadata(void *addr, size_t size) {
+#if defined(_MSC_VER)
+  // On success, VirtualFree() returns nonzero, on failure 0 
+  int result = VirtualFree(addr, 0, MEM_RELEASE);
+  if (result == 0)
+    fatalError(/* flags = */ 0, "swift_freePage: VirtualFree() failed");
+#else
+  // On success, munmap() returns 0, on failure -1
+  int result = munmap(addr, size);
+  if (result != 0)
+    fatalError(/* flags = */ 0, "swift_freePage: munmap() failed");
+#endif
+}
+
+void *MetadataAllocator::alloc(size_t size) {
+  const uintptr_t PageSize = SWIFT_LAZY_CONSTANT(swift_pageSize());
   // If the requested size is a page or larger, map page(s) for it
   // specifically.
-  if (LLVM_UNLIKELY(size > pagesizeMask)) {
-    auto mem = mmap(nullptr, (size + pagesizeMask) & ~pagesizeMask,
-                    PROT_READ|PROT_WRITE, MAP_ANON|MAP_PRIVATE,
-                    VM_TAG_FOR_SWIFT_METADATA, 0);
-    if (mem == MAP_FAILED)
+  if (LLVM_UNLIKELY(size >= PageSize)) {
+    void *mem = swift_allocateMetadataRoundingToPage(size);
+    if (!mem)
       crash("unable to allocate memory for metadata cache");
     return mem;
   }
-  
-  char *end = next + size;
-  
-  // Allocate a new page if we need one.
-  if (LLVM_UNLIKELY(((uintptr_t)next & ~pagesizeMask)
-                      != (((uintptr_t)end & ~pagesizeMask)))){
-    next = (char*)
-      mmap(nullptr, pagesizeMask+1, PROT_READ|PROT_WRITE,
-           MAP_ANON|MAP_PRIVATE, VM_TAG_FOR_SWIFT_METADATA, 0);
 
-    if (next == MAP_FAILED)
-      crash("unable to allocate memory for metadata cache");
-    end = next + size;
-  }
+  uintptr_t curValue = NextValue.load(std::memory_order_relaxed);
+  while (true) {
+    char *next = reinterpret_cast<char*>(curValue);
+    char *end = next + size;
   
-  char *addr = next;
-  next = end;
-  return addr;
+    // If we wrap over the end of the page, allocate a new page.
+    void *allocation = nullptr;
+    const uintptr_t PageSizeMask = PageSize - 1;
+    if (LLVM_UNLIKELY(((uintptr_t)next & ~PageSizeMask)
+                        != (((uintptr_t)end & ~PageSizeMask)))) {
+      // Allocate a new page if we haven't already.
+      allocation = swift_allocateMetadataRoundingToPage(PageSize);
+
+      if (!allocation)
+        crash("unable to allocate memory for metadata cache");
+
+      next = (char*) allocation;
+      end = next + size;
+    }
+
+    // Swap it into place.
+    if (LLVM_LIKELY(std::atomic_compare_exchange_weak_explicit(
+            &NextValue, &curValue, reinterpret_cast<uintptr_t>(end),
+            std::memory_order_relaxed, std::memory_order_relaxed))) {
+      return next;
+    }
+
+    // If that didn't succeed, and we allocated, free the allocation.
+    // This potentially causes us to perform multiple mmaps under contention,
+    // but it keeps the fast path pristine.
+    if (allocation) {
+      swift_freeMetadata(allocation, PageSize);
+    }
+  }
 }
 
 namespace {
@@ -243,26 +304,9 @@ swift::swift_allocateGenericValueMetadata(GenericMetadata *pattern,
     pattern->AddressPoint;
   auto patternMetadata = reinterpret_cast<const ValueMetadata*>(patternBytes);
   metadata->Description = patternMetadata->Description.get();
-  metadata->Parent = patternMetadata->Parent.get();
+  metadata->Parent = patternMetadata->Parent;
   
   return metadata;
-}
-
-/// Entrypoint for non-generic types with resilient layout.
-const Metadata *
-swift::swift_getResilientMetadata(GenericMetadata *pattern) {
-  assert(pattern->NumKeyArguments == 0);
-
-  auto entry = getCache(pattern).findOrAdd(nullptr, 0,
-    [&]() -> GenericCacheEntry* {
-      // Create new metadata to cache.
-      auto metadata = pattern->CreateFunction(pattern, nullptr);
-      auto entry = GenericCacheEntry::getFromMetadata(pattern, metadata);
-      entry->Value = metadata;
-      return entry;
-    });
-
-  return entry->Value;
 }
 
 /// The primary entrypoint.
@@ -1368,7 +1412,7 @@ void swift::swift_initStructMetadata_UniversalStrategy(size_t numFields,
   auto layout = BasicLayout::initialForValueType();
   performBasicLayout(layout, fieldTypes, numFields,
     [&](size_t i, const TypeLayout *fieldType, size_t offset) {
-      fieldOffsets[i] = offset;
+      assignUnlessEqual(fieldOffsets[i], offset);
     });
 
   vwtable->size = layout.size;
@@ -1473,8 +1517,13 @@ static void _swift_initGenericClassObjCName(ClassMetadata *theClass) {
 }
 #endif
 
-static void _swift_initializeSuperclass(ClassMetadata *theClass,
-                                        bool copyFieldOffsetVectors) {
+/// Initialize the invariant superclass components of a class metadata,
+/// such as the generic type arguments, field offsets, and so on.
+///
+/// This may also relocate the metadata object if it wasn't allocated
+/// with enough space.
+static ClassMetadata *_swift_initializeSuperclass(ClassMetadata *theClass,
+                                                  bool copyFieldOffsetVectors) {
 #if SWIFT_OBJC_INTEROP
   // If the class is generic, we need to give it a name for Objective-C.
   if (theClass->getDescription()->GenericParams.isGeneric())
@@ -1483,7 +1532,43 @@ static void _swift_initializeSuperclass(ClassMetadata *theClass,
 
   const ClassMetadata *theSuperclass = theClass->SuperClass;
   if (theSuperclass == nullptr)
-    return;
+    return theClass;
+
+  // Relocate the metadata if necessary.
+  //
+  // For now, we assume that relocation is only required when the parent
+  // class has prefix matter we didn't know about.  This isn't consistent
+  // with general class resilience, however.
+  if (theSuperclass->isTypeMetadata()) {
+    auto superAP = theSuperclass->getClassAddressPoint();
+    auto oldClassAP = theClass->getClassAddressPoint();
+    if (superAP > oldClassAP) {
+      size_t extraPrefixSize = superAP - oldClassAP;
+      size_t oldClassSize = theClass->getClassSize();
+
+      // Allocate a new metadata object.
+      auto rawNewClass = (char*) malloc(extraPrefixSize + oldClassSize);
+      auto rawOldClass = (const char*) theClass;
+      auto rawSuperclass = (const char*) theSuperclass;
+
+      // Copy the extra prefix from the superclass.
+      memcpy((void**) (rawNewClass),
+             (void* const *) (rawSuperclass - superAP),
+             extraPrefixSize);
+      // Copy the rest of the data from the derived class.
+      memcpy((void**) (rawNewClass + extraPrefixSize),
+             (void* const *) (rawOldClass - oldClassAP),
+             oldClassSize);
+
+      // Update the class extents on the new metadata object.
+      theClass = reinterpret_cast<ClassMetadata*>(rawNewClass + oldClassAP);
+      theClass->setClassAddressPoint(superAP);
+      theClass->setClassSize(extraPrefixSize + oldClassSize);
+
+      // The previous metadata should be global data, so we have no real
+      // choice but to drop it on the floor.
+    }
+  }
 
   // If any ancestor classes have generic parameters or field offset
   // vectors, inherit them.
@@ -1491,7 +1576,7 @@ static void _swift_initializeSuperclass(ClassMetadata *theClass,
   auto *classWords = reinterpret_cast<uintptr_t *>(theClass);
   auto *superWords = reinterpret_cast<const uintptr_t *>(theSuperclass);
   while (ancestor && ancestor->isTypeMetadata()) {
-    auto description = ancestor->getDescription();
+    auto &description = ancestor->getDescription();
     auto &genericParams = description->GenericParams;
 
     // Copy the parent type.
@@ -1528,15 +1613,26 @@ static void _swift_initializeSuperclass(ClassMetadata *theClass,
     = (const ClassMetadata *)object_getClass((id)theSuperclass);
   theMetaclass->SuperClass = theSuperMetaclass;
 #endif
+
+  return theClass;
 }
+
+#if SWIFT_OBJC_INTEROP
+static MetadataAllocator &getResilientMetadataAllocator() {
+  // This should be constant-initialized, but this is safe.
+  static MetadataAllocator allocator;
+  return allocator;
+}
+#endif
 
 /// Initialize the field offset vector for a dependent-layout class, using the
 /// "Universal" layout strategy.
-void swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
-                                          size_t numFields,
-                                          const ClassFieldLayout *fieldLayouts,
-                                          size_t *fieldOffsets) {
-  _swift_initializeSuperclass(self, /*copyFieldOffsetVectors=*/true);
+ClassMetadata *
+swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
+                                                 size_t numFields,
+                                           const ClassFieldLayout *fieldLayouts,
+                                                 size_t *fieldOffsets) {
+  self = _swift_initializeSuperclass(self, /*copyFieldOffsetVectors=*/true);
 
   // Start layout by appending to a standard heap object header.
   size_t size, alignMask;
@@ -1625,9 +1721,10 @@ void swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
   // even if Swift doesn't, because of SwiftObject.)
   rodata->InstanceStart = size;
 
-  auto &allocator = unsafeGetInitializedCache(
-                           self->getDescription()->getGenericMetadataPattern())
-    .getAllocator();
+  auto genericPattern = self->getDescription()->getGenericMetadataPattern();
+  auto &allocator =
+    genericPattern ? unsafeGetInitializedCache(genericPattern).getAllocator()
+                   : getResilientMetadataAllocator();
 
   // Always clone the ivar descriptors.
   if (numFields) {
@@ -1703,6 +1800,8 @@ void swift::swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
     }
   }
 #endif
+
+  return self;
 }
 
 /// \brief Fetch the type metadata associated with the formal dynamic
@@ -2048,12 +2147,12 @@ getExistentialValueWitnesses(ExistentialTypeState &E,
                              SpecialProtocol special) {
   // Use special representation for special protocols.
   switch (special) {
-  case SpecialProtocol::ErrorProtocol:
+  case SpecialProtocol::Error:
 #if SWIFT_OBJC_INTEROP
-    // ErrorProtocol always has a single-ObjC-refcounted representation.
+    // Error always has a single-ObjC-refcounted representation.
     return &_TWVBO;
 #else
-    // Without ObjC interop, ErrorProtocol is native-refcounted.
+    // Without ObjC interop, Error is native-refcounted.
     return &_TWVBo;
 #endif
       
@@ -2075,8 +2174,8 @@ template<> ExistentialTypeRepresentation
 ExistentialTypeMetadata::getRepresentation() const {
   // Some existentials use special containers.
   switch (Flags.getSpecialProtocol()) {
-  case SpecialProtocol::ErrorProtocol:
-    return ExistentialTypeRepresentation::ErrorProtocol;
+  case SpecialProtocol::Error:
+    return ExistentialTypeRepresentation::Error;
   case SpecialProtocol::AnyObject:
   case SpecialProtocol::None:
     break;
@@ -2100,7 +2199,7 @@ ExistentialTypeMetadata::mayTakeValue(const OpaqueValue *container) const {
     return true;
     
   // References to boxed existential containers may be shared.
-  case ExistentialTypeRepresentation::ErrorProtocol: {
+  case ExistentialTypeRepresentation::Error: {
     // We can only take the value if the box is a bridged NSError, in which case
     // owning a reference to the box is owning a reference to the NSError.
     // TODO: Or if the box is uniquely referenced. We don't have intimate
@@ -2128,7 +2227,7 @@ const {
     break;
   }
   
-  case ExistentialTypeRepresentation::ErrorProtocol:
+  case ExistentialTypeRepresentation::Error:
     // TODO: If we were able to claim the value from a uniquely-owned
     // existential box, we would want to deallocError here.
     break;
@@ -2149,7 +2248,7 @@ ExistentialTypeMetadata::projectValue(const OpaqueValue *container) const {
     return opaqueContainer->Type->vw_projectBuffer(
                          const_cast<ValueBuffer*>(&opaqueContainer->Buffer));
   }
-  case ExistentialTypeRepresentation::ErrorProtocol: {
+  case ExistentialTypeRepresentation::Error: {
     const SwiftError *errorBox
       = *reinterpret_cast<const SwiftError * const *>(container);
     // If the error is a bridged NSError, then the "box" is in fact itself
@@ -2175,7 +2274,7 @@ ExistentialTypeMetadata::getDynamicType(const OpaqueValue *container) const {
       reinterpret_cast<const OpaqueExistentialContainer*>(container);
     return opaqueContainer->Type;
   }
-  case ExistentialTypeRepresentation::ErrorProtocol: {
+  case ExistentialTypeRepresentation::Error: {
     const SwiftError *errorBox
       = *reinterpret_cast<const SwiftError * const *>(container);
     return errorBox->getType();
@@ -2205,10 +2304,10 @@ ExistentialTypeMetadata::getWitnessTable(const OpaqueValue *container,
     witnessTables = opaqueContainer->getWitnessTables();
     break;
   }
-  case ExistentialTypeRepresentation::ErrorProtocol: {
+  case ExistentialTypeRepresentation::Error: {
     // Only one witness table we should be able to return, which is the
-    // ErrorProtocol.
-    assert(i == 0 && "only one witness table in an ErrorProtocol box");
+    // Error.
+    assert(i == 0 && "only one witness table in an Error box");
     const SwiftError *errorBox
       = *reinterpret_cast<const SwiftError * const *>(container);
     return errorBox->getErrorConformance();
@@ -2344,12 +2443,9 @@ struct llvm::DenseMapInfo<GlobalString> {
 // StringMap because we don't need to actually copy the string.
 namespace {
 struct ForeignTypeState {
-  pthread_mutex_t Lock;
+  Mutex Lock;
+  ConditionVariable InitializationWaiters;
   llvm::DenseMap<GlobalString, const ForeignTypeMetadata *> Types;
-  
-  ForeignTypeState() {
-    pthread_mutex_init(&Lock, nullptr);
-  }
 };
 }
 
@@ -2362,19 +2458,76 @@ swift::swift_getForeignTypeMetadata(ForeignTypeMetadata *nonUnique) {
     return unique;
   }
 
-  // Okay, insert a new row.
-  auto &Foreign = ForeignTypes.get();
-  pthread_mutex_lock(&Foreign.Lock);
-  auto insertResult = Foreign.Types.insert({GlobalString(nonUnique->getName()),
-                                            nonUnique});
-  auto uniqueMetadata = insertResult.first->second;
+  // Okay, check the global map.
+  auto &foreignTypes = ForeignTypes.get();
+  GlobalString key(nonUnique->getName());
+  bool hasInit = nonUnique->hasInitializationFunction();
 
-  // If the insertion created a new entry, set up the metadata we were
-  // passed as the insertion result.
-  if (insertResult.second) {
-    // Call the initialization callback if present.
-    if (nonUnique->hasInitializationFunction())
-      nonUnique->getInitializationFunction()(nonUnique);
+  const ForeignTypeMetadata *uniqueMetadata;
+  bool inserted;
+
+  // A helper function to find the current entry for the key using the
+  // saved iterator if it's still valid.  This should only be called
+  // while the lock is held.
+  decltype(foreignTypes.Types.begin()) savedIterator;
+  size_t savedSize;
+  auto getCurrentEntry = [&]() -> const ForeignTypeMetadata *& {
+    // The iterator may have been invalidated if the size of the map
+    // has changed since the last lookup.
+    if (foreignTypes.Types.size() != savedSize) {
+      savedSize = foreignTypes.Types.size();
+      savedIterator = foreignTypes.Types.find(key);
+      assert(savedIterator != foreignTypes.Types.end() &&
+             "entries cannot be removed from foreign types metadata map");
+    }
+    return savedIterator->second;
+  };
+
+  {
+    ScopedLock guard(foreignTypes.Lock);
+
+    // Try to create an entry in the map.  The initial value of the entry
+    // is our copy of the metadata unless it has an initialization function,
+    // in which case we have to insert null as a placeholder to tell others
+    // to wait while we call the initializer.
+    auto valueToInsert = (hasInit ? nullptr : nonUnique);
+    auto insertResult = foreignTypes.Types.insert({key, valueToInsert});
+    inserted = insertResult.second;
+    savedIterator = insertResult.first;
+    savedSize = foreignTypes.Types.size();
+    uniqueMetadata = savedIterator->second;
+
+    // If we created the entry, then the unique metadata is our copy.
+    if (inserted) {
+      uniqueMetadata = nonUnique;
+
+    // If we didn't create the entry, but it's null, then we have to wait
+    // until it becomes non-null.
+    } else {
+      while (uniqueMetadata == nullptr) {
+        foreignTypes.Lock.wait(foreignTypes.InitializationWaiters);
+        uniqueMetadata = getCurrentEntry();
+      }
+    }
+  }
+
+  // If we inserted the entry and there's an initialization function,
+  // call it.  This has to be done with the lock dropped.
+  if (inserted && hasInit) {
+    nonUnique->getInitializationFunction()(nonUnique);
+
+    // Update the cache entry:
+
+    //   - Reacquire the lock.
+    ScopedLock guard(foreignTypes.Lock);
+
+    //   - Change the entry.
+    auto &entry = getCurrentEntry();
+    assert(entry == nullptr);
+    entry = nonUnique;
+
+    //   - Notify waiters.
+    foreignTypes.InitializationWaiters.notifyAll();
   }
 
   // Remember the unique result in the invasive cache.  We don't want
@@ -2382,7 +2535,7 @@ swift::swift_getForeignTypeMetadata(ForeignTypeMetadata *nonUnique) {
   // it will be possible for code to fast-path through this function
   // too soon.
   nonUnique->setCachedUniqueMetadata(uniqueMetadata);
-  pthread_mutex_unlock(&Foreign.Lock);
+
   return uniqueMetadata;
 }
 
@@ -2390,7 +2543,7 @@ swift::swift_getForeignTypeMetadata(ForeignTypeMetadata *nonUnique) {
 
 template<> const GenericMetadata *
 Metadata::getGenericPattern() const {
-  auto ntd = getNominalTypeDescriptor();
+  auto &ntd = getNominalTypeDescriptor();
   if (!ntd)
     return nullptr;
   return ntd->getGenericMetadataPattern();
@@ -2459,19 +2612,6 @@ void _swift_debug_verifyTypeLayoutAttribute(Metadata *type,
   }
 }
 #endif
-
-SWIFT_RUNTIME_EXPORT
-extern "C"
-void swift_initializeSuperclass(ClassMetadata *theClass,
-                                bool copyFieldOffsetVectors) {
-  // Copy generic parameters and field offset vectors from the superclass.
-  _swift_initializeSuperclass(theClass, copyFieldOffsetVectors);
-
-#if SWIFT_OBJC_INTEROP
-  // Register the class pair with the ObjC runtime.
-  swift_instantiateObjCClass(theClass);
-#endif
-}
 
 /*** Protocol witness tables *************************************************/
 
@@ -2630,3 +2770,5 @@ swift::swift_getGenericWitnessTable(GenericWitnessTable *genericTable,
 
   return entry->get(genericTable);
 }
+
+uint64_t swift::RelativeDirectPointerNullPtr = 0;

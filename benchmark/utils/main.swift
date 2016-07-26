@@ -65,6 +65,7 @@ import NopDeinit
 import ObjectAllocation
 import ObjectiveCBridging
 import ObjectiveCBridgingStubs
+import ObjectiveCNoBridgingStubs
 import OpenClose
 import Phonebook
 import PolymorphicCalls
@@ -168,9 +169,23 @@ precommitTests = [
   "ObjectiveCBridgeFromNSSetAnyObjectToStringForced": run_ObjectiveCBridgeFromNSSetAnyObjectToStringForced,
   "ObjectiveCBridgeToNSSet": run_ObjectiveCBridgeToNSSet,
   "ObjectiveCBridgeStubFromNSString": run_ObjectiveCBridgeStubFromNSString,
+  "ObjectiveCBridgeStubFromNSStringRef": run_ObjectiveCBridgeStubFromNSStringRef,
   "ObjectiveCBridgeStubToNSString": run_ObjectiveCBridgeStubToNSString,
+  "ObjectiveCBridgeStubToNSStringRef": run_ObjectiveCBridgeStubToNSStringRef,
   "ObjectiveCBridgeStubFromArrayOfNSString": run_ObjectiveCBridgeStubFromArrayOfNSString,
   "ObjectiveCBridgeStubToArrayOfNSString": run_ObjectiveCBridgeStubToArrayOfNSString,
+  "ObjectiveCBridgeStubFromNSDate": run_ObjectiveCBridgeStubFromNSDate,
+  "ObjectiveCBridgeStubFromNSDateRef": run_ObjectiveCBridgeStubFromNSDateRef,
+  "ObjectiveCBridgeStubToNSDate": run_ObjectiveCBridgeStubToNSDate,
+  "ObjectiveCBridgeStubToNSDateRef": run_ObjectiveCBridgeStubToNSDateRef,
+  "ObjectiveCBridgeStubDateAccess": run_ObjectiveCBridgeStubDateAccess,
+  "ObjectiveCBridgeStubNSDateRefAccess": run_ObjectiveCBridgeStubNSDateRefAccess,
+  "ObjectiveCBridgeStubDateMutation": run_ObjectiveCBridgeStubDateMutation,
+  "ObjectiveCBridgeStubNSDateMutationRef": run_ObjectiveCBridgeStubNSDateMutationRef,
+  "ObjectiveCBridgeStubURLAppendPath": run_ObjectiveCBridgeStubURLAppendPath,
+  "ObjectiveCBridgeStubURLAppendPathRef": run_ObjectiveCBridgeStubURLAppendPathRef,
+  "ObjectiveCBridgeStubDataAppend": run_ObjectiveCBridgeStubDataAppend,
+  "ObjectiveCBridgeStubNSDataAppend": run_ObjectiveCBridgeStubNSDataAppend,
   "OpenClose": run_OpenClose,
   "Phonebook": run_Phonebook,
   "PolymorphicCalls": run_PolymorphicCalls,
@@ -197,12 +212,18 @@ precommitTests = [
   "Sim2DArray": run_Sim2DArray,
   "SortLettersInPlace": run_SortLettersInPlace,
   "SortStrings": run_SortStrings,
+  "SortStringsUnicode": run_SortStringsUnicode,
   "StackPromo": run_StackPromo,
   "StaticArray": run_StaticArray,
   "StrComplexWalk": run_StrComplexWalk,
   "StrToInt": run_StrToInt,
   "StringBuilder": run_StringBuilder,
+  "StringEqualPointerComparison": run_StringEqualPointerComparison,
   "StringInterpolation": run_StringInterpolation,
+  "StringHasPrefix": run_StringHasPrefix,
+  "StringHasPrefixUnicode": run_StringHasPrefixUnicode,
+  "StringHasSuffix": run_StringHasSuffix,
+  "StringHasSuffixUnicode": run_StringHasSuffixUnicode,
   "StringWalk": run_StringWalk,
   "StringWithCString": run_StringWithCString,
   "SuperChars": run_SuperChars,

@@ -195,8 +195,7 @@ SILModule::lookUpDefaultWitnessTable(const ProtocolDecl *Protocol,
   if (found == DefaultWitnessTableMap.end()) {
     if (deserializeLazily) {
       SILLinkage linkage =
-        getSILLinkage(getDeclLinkage(Protocol, /*internalAsVersioned=*/ false),
-                      ForDefinition);
+        getSILLinkage(getDeclLinkage(Protocol), ForDefinition);
       SILDefaultWitnessTable *wtable =
         SILDefaultWitnessTable::create(*this, linkage, Protocol);
       wtable = getSILLoader()->lookupDefaultWitnessTable(wtable);
@@ -270,6 +269,7 @@ static SILFunction::ClassVisibility_t getClassVisibility(SILDeclRef constant) {
 
   switch (classType->getEffectiveAccess()) {
     case Accessibility::Private:
+    case Accessibility::FilePrivate:
       return SILFunction::NotRelevant;
     case Accessibility::Internal:
       return SILFunction::InternalClass;
@@ -328,16 +328,16 @@ SILFunction *SILModule::getOrCreateFunction(SILLocation loc,
     return fn;
   }
 
-  IsTransparent_t IsTrans = constant.isTransparent()?
-                              IsTransparent : IsNotTransparent;
-  IsFragile_t IsFrag = IsNotFragile;
-  if (IsTrans == IsTransparent && (linkage == SILLinkage::Public
-                                   || linkage == SILLinkage::PublicExternal)) {
-    IsFrag = IsFragile;
-  }
+  IsTransparent_t IsTrans = constant.isTransparent()
+                            ? IsTransparent
+                            : IsNotTransparent;
+  IsFragile_t IsFrag = constant.isFragile()
+                       ? IsFragile
+                       : IsNotFragile;
 
-  EffectsKind EK = constant.hasEffectsAttribute() ?
-  constant.getEffectsAttribute() : EffectsKind::Unspecified;
+  EffectsKind EK = constant.hasEffectsAttribute()
+                   ? constant.getEffectsAttribute()
+                   : EffectsKind::Unspecified;
 
   Inline_t inlineStrategy = InlineDefault;
   if (constant.isNoinline())
@@ -356,10 +356,12 @@ SILFunction *SILModule::getOrCreateFunction(SILLocation loc,
 
   F->setGlobalInit(constant.isGlobal());
   if (constant.hasDecl()) {
-    if (constant.isForeign && constant.isClangGenerated())
-      F->setForeignBody(HasForeignBody);
+    auto decl = constant.getDecl();
 
-    auto Attrs = constant.getDecl()->getAttrs();
+    if (constant.isForeign && decl->hasClangNode())
+      F->setClangNodeOwner(decl);
+
+    auto Attrs = decl->getAttrs();
     for (auto *A : Attrs.getAttributes<SemanticsAttr, false /*AllowInvalid*/>())
       F->addSemanticsAttr(cast<SemanticsAttr>(A)->Value);
 
@@ -401,7 +403,7 @@ SILFunction *SILModule::getOrCreateSharedFunction(SILLocation loc,
                              isThunk, SILFunction::NotRelevant);
 }
 
-SILFunction *SILModule::getOrCreateFunction(
+SILFunction *SILModule::createFunction(
     SILLinkage linkage, StringRef name, CanSILFunctionType loweredType,
     GenericParamList *contextGenericParams, Optional<SILLocation> loc,
     IsBare_t isBareSILFunction, IsTransparent_t isTrans, IsFragile_t isFragile,
@@ -485,12 +487,66 @@ bool SILModule::linkFunction(StringRef Name, SILModule::LinkingMode Mode) {
 }
 
 SILFunction *SILModule::hasFunction(StringRef Name, SILLinkage Linkage) {
-  assert(!lookUpFunction(Name) && "hasFunction should be only called for "
-                                  "functions that are not contained in the "
-                                  "SILModule yet");
-  return SILLinkerVisitor(*this, getSILLoader(),
-                          SILModule::LinkingMode::LinkNormal)
-      .lookupFunction(Name, Linkage);
+  assert((Linkage == SILLinkage::Public ||
+          Linkage == SILLinkage::PublicExternal) &&
+         "Only a lookup of public functions is supported currently");
+
+  SILFunction *F = nullptr;
+
+  // First, check if there is a function with a required name in the
+  // current module.
+  SILFunction *CurF = lookUpFunction(Name);
+
+  // Nothing to do if the current module has a required function
+  // with a proper linkage already.
+  if (CurF && CurF->getLinkage() == Linkage) {
+    F = CurF;
+  } else {
+    assert((!CurF || CurF->getLinkage() != Linkage) &&
+           "hasFunction should be only called for functions that are not "
+           "contained in the SILModule yet or do not have a required linkage");
+  }
+
+  if (!F) {
+    SILLinkerVisitor Visitor(*this, getSILLoader(),
+                             SILModule::LinkingMode::LinkNormal);
+    if (CurF) {
+      // Perform this lookup only if a function with a given
+      // name is present in the current module.
+      // This is done to reduce the amount of IO from the
+      // swift module file.
+      if (!Visitor.hasFunction(Name, Linkage))
+        return nullptr;
+      // The function in the current module will be changed.
+      F = CurF;
+    }
+
+    // If function with a given name wasn't seen anywhere yet
+    // or if it is known to exist, perform a lookup.
+    if (!F) {
+      // Try to load the function from other modules.
+      F = Visitor.lookupFunction(Name, Linkage);
+      // Bail if nothing was found and we are not sure if
+      // this function exists elsewhere.
+      if (!F)
+        return nullptr;
+      assert(F && "SILFunction should be present in one of the modules");
+      assert(F->getLinkage() == Linkage && "SILFunction has a wrong linkage");
+    }
+  }
+
+  // If a function exists already and it is a non-optimizing
+  // compilation, simply convert it into an external declaration,
+  // so that a compiled version from the shared library is used.
+  if (F->isDefinition() &&
+      F->getModule().getOptions().Optimization <
+          SILOptions::SILOptMode::Optimize) {
+    F->convertToDeclaration();
+  }
+  if (F->isExternalDeclaration())
+    F->setFragile(IsFragile_t::IsNotFragile);
+  F->setLinkage(Linkage);
+  return F;
 }
 
 void SILModule::linkAllWitnessTables() {

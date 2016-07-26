@@ -82,6 +82,7 @@ namespace swift {
                                      SmallVectorImpl<uint64_t> &scratch);
     /// Read a SIL instruction within a given SIL basic block.
     bool readSILInstruction(SILFunction *Fn, SILBasicBlock *BB,
+                            SILBuilder &Builder,
                             unsigned RecordKind,
                             SmallVectorImpl<uint64_t> &scratch);
 
@@ -117,6 +118,7 @@ public:
     SILFunction *lookupSILFunction(SILFunction *InFunc);
     SILFunction *lookupSILFunction(StringRef Name,
                                    bool declarationOnly = false);
+    bool hasSILFunction(StringRef Name, SILLinkage Linkage);
     SILVTable *lookupVTable(Identifier Name);
     SILWitnessTable *lookupWitnessTable(SILWitnessTable *wt);
     SILDefaultWitnessTable *

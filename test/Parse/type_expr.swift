@@ -105,8 +105,8 @@ func genQualifiedType() {
   let _ : () = Gen<Foo>.Bar.meth()
   _ = Gen<Foo>.Bar.instMeth
 
-  _ = Gen<Foo>.Bar // expected-error{{expected member name or constructor call after type name}} expected-note{{add arguments}} {{19-19=()}} expected-note{{use '.self'}} {{19-19=.self}}
-  _ = Gen<Foo>.Bar.dynamicType // expected-error{{'.dynamicType' is not allowed after a type name}} {{20-31=self}}
+  _ = Gen<Foo>.Bar
+  _ = Gen<Foo>.Bar.dynamicType
 }
 
 func archetype<T: Zim>(_: T) {
@@ -169,4 +169,32 @@ func meta_metatypes() {
   _ = P.Protocol.Protocol.self // expected-error{{cannot use 'Protocol' with non-protocol type 'P.Protocol'}}
   _ = P.Protocol.Type.self
   _ = B.Type.self
+}
+
+// https://bugs.swift.org/browse/SR-502
+func testFunctionCollectionTypes() {
+  _ = [(Int) -> Int]()
+  _ = [(Int, Int) -> Int]()
+  _ = [(x: Int, y: Int) -> Int]()
+  // Make sure associativity is correct
+  let a = [(Int) -> (Int) -> Int]()
+  let b: Int = a[0](5)(4)
+
+  _ = [String: (Int) -> Int]()
+  _ = [String: (Int, Int) -> Int]()
+
+  _ = [1 -> Int]() // expected-error{{expected type before '->'}}
+  _ = [Int -> 1]() // expected-error{{expected type after '->'}}
+
+  // Should parse () as void type when before or after arrow
+  _ = [() -> Int]()
+  _ = [(Int) -> ()]()
+
+  _ = [(Int) throws -> Int]()
+  _ = [(Int) -> throws Int]() // expected-error{{'throws' may only occur before '->'}}
+  _ = [Int throws Int]() // expected-error{{'throws' may only occur before '->'}}
+
+  let _ = (Int) -> Int // expected-error{{expected member name or constructor call after type name}} expected-note{{add arguments after the type to construct a value of the type}} expected-note{{use '.self' to reference the type object}}
+  let _ = 2 + () -> Int // expected-error{{expected type before '->'}}
+  let _ = () -> (Int, Int).2 // expected-error{{expected type after '->'}}
 }

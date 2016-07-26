@@ -25,7 +25,6 @@
 #include "swift/AST/TypeMemberVisitor.h"
 #include "swift/Basic/Fallthrough.h"
 #include "swift/SIL/SILArgument.h"
-#include "swift/SIL/SILWitnessVisitor.h"
 #include "swift/SIL/TypeLowering.h"
 
 using namespace swift;
@@ -36,10 +35,14 @@ SILFunction *SILGenModule::getDynamicThunk(SILDeclRef constant,
   // Mangle the constant with a _TTD header.
   auto name = constant.mangle("_TTD");
 
+  IsFragile_t isFragile = IsNotFragile;
+  if (makeModuleFragile)
+    isFragile = IsFragile;
+  if (constant.isFragile())
+    isFragile = IsFragile;
   auto F = M.getOrCreateFunction(constant.getDecl(), name, SILLinkage::Shared,
                             constantInfo.getSILType().castTo<SILFunctionType>(),
-                            IsBare, IsTransparent,
-                            makeModuleFragile ? IsFragile : IsNotFragile);
+                            IsBare, IsTransparent, isFragile, IsThunk);
 
   if (F->empty()) {
     // Emit the thunk if we haven't yet.
@@ -88,9 +91,10 @@ SILGenModule::emitVTableMethod(SILDeclRef derived, SILDeclRef base) {
   auto *derivedDecl = cast<AbstractFunctionDecl>(derived.getDecl());
   SILLocation loc(derivedDecl);
   auto thunk =
-      M.getOrCreateFunction(SILLinkage::Private, name, overrideInfo.SILFnType,
-                            derivedDecl->getGenericParams(), loc, IsBare,
-                            IsNotTransparent, IsNotFragile);
+      M.createFunction(SILLinkage::Private,
+                       name, overrideInfo.SILFnType,
+                       derivedDecl->getGenericParams(), loc, IsBare,
+                       IsNotTransparent, IsNotFragile);
   thunk->setDebugScope(new (M) SILDebugScope(loc, thunk));
 
   SILGenFunction(*this, *thunk)
@@ -237,8 +241,9 @@ public:
   }
 
   void visitConstructorDecl(ConstructorDecl *cd) {
-    // Stub constructors don't get an entry.
-    if (cd->hasStubImplementation())
+    // Stub constructors don't get an entry, unless they were synthesized to
+    // override a non-required designated initializer in the superclass.
+    if (cd->hasStubImplementation() && !cd->getOverriddenDecl())
       return;
 
     // Required constructors (or overrides thereof) have their allocating entry
@@ -325,10 +330,6 @@ public:
         genVTable->visit(member);
 
       visit(member);
-    }
-
-    for (Decl *member : theType->getDerivedGlobalDecls()) {
-      SGM.visit(member);
     }
 
     if (auto protocol = dyn_cast<ProtocolDecl>(theType)) {
@@ -435,8 +436,6 @@ public:
   void emitExtension(ExtensionDecl *e) {
     for (Decl *member : e->getMembers())
       visit(member);
-    for (Decl *member : e->getDerivedGlobalDecls())
-      SGM.visit(member);
 
     if (!e->getExtendedType()->isExistentialType()) {
       // Emit witness tables for protocol conformances introduced by the

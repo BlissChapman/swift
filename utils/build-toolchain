@@ -13,6 +13,12 @@
 cd "$(dirname $0)/.." || exit
 SRC_DIR=$PWD
 
+DRY_RUN=
+if [[ "$1" == "-n" || "$1" == "--dry-run" ]] ; then
+    DRY_RUN="-n"
+    shift
+fi
+
 YEAR=$(date +"%Y")
 MONTH=$(date +"%m")
 DAY=$(date +"%d")
@@ -21,7 +27,8 @@ ARCHIVE="${TOOLCHAIN_VERSION}-osx.tar.gz"
 SYM_ARCHIVE="${TOOLCHAIN_VERSION}-osx-symbols.tar.gz"
 BUNDLE_PREFIX=${1:?Please specify bundle prefix e.g. $0 local.swift}
 BUNDLE_IDENTIFIER="${BUNDLE_PREFIX}.${YEAR}${MONTH}${DAY}"
-DISPLAY_NAME="Local Swift Development Snapshot ${YEAR}-${MONTH}-${DAY}"
+DISPLAY_NAME_SHORT="Local Swift Development Snapshot"
+DISPLAY_NAME="${DISPLAY_NAME_SHORT} ${YEAR}-${MONTH}-${DAY}"
 TOOLCHAIN_NAME="${TOOLCHAIN_VERSION}"
 
 SWIFT_INSTALLABLE_PACKAGE="${SRC_DIR}/${ARCHIVE}"
@@ -36,7 +43,7 @@ else
     SWIFT_PACKAGE=buildbot_linux
 fi
 
-./utils/build-script --preset="${SWIFT_PACKAGE}" \
+./utils/build-script ${DRY_RUN} --preset="${SWIFT_PACKAGE}" \
         install_destdir="${SWIFT_INSTALL_DIR}" \
         installable_package="${SWIFT_INSTALLABLE_PACKAGE}" \
         install_toolchain_dir="${SWIFT_TOOLCHAIN_DIR}" \
@@ -44,6 +51,7 @@ fi
         symbols_package="${SYMBOLS_PACKAGE}" \
         darwin_toolchain_bundle_identifier="${BUNDLE_IDENTIFIER}" \
         darwin_toolchain_display_name="${DISPLAY_NAME}" \
+        darwin_toolchain_display_name_short="${DISPLAY_NAME_SHORT}" \
         darwin_toolchain_xctoolchain_name="${TOOLCHAIN_NAME}" \
         darwin_toolchain_version="${TOOLCHAIN_VERSION}" \
         darwin_toolchain_alias="Local"

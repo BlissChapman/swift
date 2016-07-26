@@ -290,7 +290,7 @@ enumerateDirectSupertypes(TypeChecker &tc, Type type) {
     // FIXME: Can weaken input type, but we really don't want to get in the
     // business of strengthening the result type.
 
-    // An [autoclosure] function type can be viewed as scalar of the result
+    // An @autoclosure function type can be viewed as scalar of the result
     // type.
     if (functionTy->isAutoClosure())
       result.push_back(functionTy->getResult());
@@ -579,9 +579,9 @@ namespace {
 
     void foundLiteralBinding(ProtocolDecl *proto) {
       switch (*proto->getKnownProtocolKind()) {
-      case KnownProtocolKind::DictionaryLiteralConvertible:
-      case KnownProtocolKind::ArrayLiteralConvertible:
-      case KnownProtocolKind::StringInterpolationConvertible:
+      case KnownProtocolKind::ExpressibleByDictionaryLiteral:
+      case KnownProtocolKind::ExpressibleByArrayLiteral:
+      case KnownProtocolKind::ExpressibleByStringInterpolation:
         LiteralBinding = LiteralBindingKind::Collection;
         break;
 
@@ -875,18 +875,16 @@ static PotentialBindings getPotentialBindings(ConstraintSystem &cs,
       }
     }
 
+    // Don't deduce IUO types.
     Type alternateType;
-    ASTContext &ctx = cs.getTypeChecker().Context;
-    if (!ctx.LangOpts.InferIUOs) {
-      // Don't deduce IUO types.
-      if (kind == AllowedBindingKind::Supertypes &&
-          constraint->getKind() >= ConstraintKind::Conversion &&
-          constraint->getKind() <= ConstraintKind::OperatorArgumentConversion) {
-        if (auto objectType =
-            cs.lookThroughImplicitlyUnwrappedOptionalType(type)) {
-          type = OptionalType::get(objectType);
-          alternateType = objectType;
-        }
+    if (kind == AllowedBindingKind::Supertypes &&
+        constraint->getKind() >= ConstraintKind::Conversion &&
+        constraint->getKind() <= ConstraintKind::OperatorArgumentConversion) {
+      auto innerType = type->getLValueOrInOutObjectType();
+      if (auto objectType =
+          cs.lookThroughImplicitlyUnwrappedOptionalType(innerType)) {
+        type = OptionalType::get(objectType);
+        alternateType = objectType;
       }
     }
 

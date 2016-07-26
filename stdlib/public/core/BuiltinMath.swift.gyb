@@ -49,8 +49,7 @@ UnaryIntrinsicFunctions = [
     'cos', 'sin',
     'exp', 'exp2',
     'log', 'log10', 'log2',
-    'fabs',
-    'ceil', 'floor', 'nearbyint', 'rint', 'round', 'trunc',
+    'nearbyint', 'rint',
 ]
 
 def TypedUnaryIntrinsicFunctions():
@@ -64,8 +63,7 @@ def TypedUnaryIntrinsicFunctions():
 // Note these have a corresponding LLVM intrinsic
 % for T, CT, bits, ufunc in TypedUnaryIntrinsicFunctions():
 @_transparent
-@warn_unused_result
-public func _${ufunc}(x: ${T}) -> ${T} {
+public func _${ufunc}(_ x: ${T}) -> ${T} {
   return ${T}(_bits: Builtin.int_${ufunc}_FPIEEE${bits}(x._value))
 }
 

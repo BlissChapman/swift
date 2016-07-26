@@ -41,17 +41,6 @@ class LazyResolver {
 public:
   virtual ~LazyResolver();
 
-  /// Completely check the given normal protocol conformance.
-  ///
-  /// \param conformance The normal protocol conformance.
-  ///
-  /// FIXME: We shouldn't need this as an entry to the lazy resolver, because
-  /// completely checking of conformances is only interesting when we're doing
-  /// complete checking of the declaration context. However, it is needed now
-  /// to maintain the order of checking, because resolveTypeWitness/
-  /// resolveWitness aren't lazy enough.
-  virtual void checkConformance(NormalProtocolConformance *conformance) = 0;
-
   /// Resolve the type witnesses for the given associated type within the given
   /// protocol conformance.
   virtual void resolveTypeWitness(const NormalProtocolConformance *conformance,
@@ -117,6 +106,72 @@ public:
   /// is usable for the given type.
   virtual bool isProtocolExtensionUsable(DeclContext *dc, Type type,
                                          ExtensionDecl *protocolExtension) = 0;
+};
+
+/// An implementation of LazyResolver that delegates to another.
+class DelegatingLazyResolver : public LazyResolver {
+protected:
+  LazyResolver &Principal;
+public:
+  DelegatingLazyResolver(LazyResolver &principal) : Principal(principal) {}
+  ~DelegatingLazyResolver(); // v-table anchor
+
+  void resolveTypeWitness(const NormalProtocolConformance *conformance,
+                          AssociatedTypeDecl *assocType) override {
+    Principal.resolveTypeWitness(conformance, assocType);
+  }
+
+  void resolveWitness(const NormalProtocolConformance *conformance,
+                      ValueDecl *requirement) override {
+    Principal.resolveWitness(conformance, requirement);
+  }
+
+
+  Type resolveMemberType(DeclContext *dc, Type type, Identifier name) override {
+    return Principal.resolveMemberType(dc, type, name);
+  }
+
+  void resolveAccessibility(ValueDecl *VD) override {
+    Principal.resolveAccessibility(VD);
+  }
+
+  void resolveDeclSignature(ValueDecl *VD) override {
+    Principal.resolveDeclSignature(VD);
+  }
+
+  void resolveInheritanceClause(
+                llvm::PointerUnion<TypeDecl *, ExtensionDecl *> decl) override {
+    Principal.resolveInheritanceClause(decl);
+  }
+
+  void resolveSuperclass(ClassDecl *classDecl) override {
+    Principal.resolveSuperclass(classDecl);
+  }
+
+  void resolveRawType(EnumDecl *enumDecl) override {
+    Principal.resolveRawType(enumDecl);
+  }
+
+  void resolveInheritedProtocols(ProtocolDecl *protocol) override {
+    Principal.resolveInheritedProtocols(protocol);
+  }
+
+  void resolveExtension(ExtensionDecl *ext) override {
+    Principal.resolveExtension(ext);
+  }
+
+  void resolveImplicitConstructors(NominalTypeDecl *nominal) override {
+    Principal.resolveImplicitConstructors(nominal);
+  }
+
+  void resolveExternalDeclImplicitMembers(NominalTypeDecl *nominal) override {
+    Principal.resolveExternalDeclImplicitMembers(nominal);
+  }
+
+  bool isProtocolExtensionUsable(DeclContext *dc, Type type,
+                                 ExtensionDecl *protocolExtension) override {
+    return Principal.isProtocolExtensionUsable(dc, type, protocolExtension);
+  }
 };
 
 

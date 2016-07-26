@@ -73,6 +73,9 @@ def disable_objc_interop :
   Flag<["-"], "disable-objc-interop">,
   HelpText<"Disable Objective-C interop code generation and config directives">;
 
+def enable_swiftcall : Flag<["-"], "enable-swiftcall">,
+  HelpText<"Enable the use of LLVM swiftcall support">;
+
 def enable_objc_attr_requires_foundation_module :
   Flag<["-"], "enable-objc-attr-requires-foundation-module">,
   HelpText<"Enable requiring uses of @objc to require importing the "
@@ -104,6 +107,9 @@ def print_clang_stats : Flag<["-"], "print-clang-stats">,
 
 def serialize_debugging_options : Flag<["-"], "serialize-debugging-options">,
   HelpText<"Always serialize options for debugging (default: only for apps)">;
+
+def autolink_library : Separate<["-"], "autolink-library">,
+  HelpText<"Add dependent library">, Flags<[FrontendOption]>;
 
 } // end let Flags = [FrontendOption, NoDriverOption]
 
@@ -172,6 +178,9 @@ def disable_diagnostic_passes : Flag<["-"], "disable-diagnostic-passes">,
 def disable_llvm_optzns : Flag<["-"], "disable-llvm-optzns">,
   HelpText<"Don't run LLVM optimization passes">;
 
+def disable_sil_perf_optzns : Flag<["-"], "disable-sil-perf-optzns">,
+  HelpText<"Don't run SIL performance optimization passes">;
+
 def disable_llvm_arc_opts : Flag<["-"], "disable-llvm-arc-opts">,
   HelpText<"Don't run LLVM ARC optimization passes.">;
 
@@ -187,14 +196,11 @@ def disable_llvm_value_names : Flag<["-"], "disable-llvm-value-names">,
 def enable_llvm_value_names : Flag<["-"], "enable-llvm-value-names">,
   HelpText<"Add names to local values in LLVM IR">;
 
-def enable_reflection_metadata : Flag<["-"], "enable-reflection-metadata">,
-  HelpText<"Enable emission of reflection metadata for nominal types">;
+def disable_reflection_metadata : Flag<["-"], "disable-reflection-metadata">,
+  HelpText<"Disable emission of reflection metadata for nominal types">;
 
-def strip_reflection_metadata : Flag<["-"], "strip-reflection-metadata">,
-  HelpText<"Strip all reflection metadata for nominal types">;
-
-def strip_reflection_names : Flag<["-"], "strip-reflection-names">,
-  HelpText<"Strip names of stored properties and enum cases from"
+def disable_reflection_names : Flag<["-"], "disable-reflection-names">,
+  HelpText<"Disable emission of names of stored properties and enum cases in"
            "reflection metadata">;
 
 def stack_promotion_checks : Flag<["-"], "emit-stack-promotion-checks">,
@@ -220,9 +226,25 @@ def enable_experimental_property_behaviors :
   Flag<["-"], "enable-experimental-property-behaviors">,
   HelpText<"Enable experimental property behaviors">;
 
+def enable_experimental_nested_generic_types :
+  Flag<["-"], "enable-experimental-nested-generic-types">,
+  HelpText<"Enable experimental support for nested generic types">;
+
+def enable_experimental_collection_casts :
+  Flag<["-"], "enable-experimental-collection-casts">,
+  HelpText<"Enable experimental support for general collection casting">;
+
 def disable_availability_checking : Flag<["-"],
   "disable-availability-checking">,
   HelpText<"Disable checking for potentially unavailable APIs">;
+
+def enable_infer_import_as_member :
+  Flag<["-"], "enable-infer-import-as-member">,
+  HelpText<"Infer when a global could be imported as a member">;
+
+def enable_swift_newtype :
+  Flag<["-"], "enable-swift-newtype">,
+  HelpText<"Enable the swift_newtype attribute">;
 
 def enable_strip_ns_prefix :
   Flag<["-"], "enable-strip-ns-prefix">,
@@ -232,9 +254,11 @@ def swift3_migration :
   Flag<["-"], "swift3-migration">,
   HelpText<"Enable Fix-It based migration aids for Swift 3">;
 
-def disable_infer_iuos :
-  Flag<["-"], "disable-infer-iuos">,
-  HelpText<"Disable inferring IUO type for otherwise unconstrained variables">;
+def warn_long_function_bodies : Separate<["-"], "warn-long-function-bodies">,
+  MetaVarName<"<n>">,
+  HelpText<"Warns when type-checking a function takes longer than <n> ms">;
+def warn_long_function_bodies_EQ : Joined<["-"], "warn-long-function-bodies=">,
+  Alias<warn_long_function_bodies>;
 
 def warn_omit_needless_words :
   Flag<["-"], "Womit-needless-words">,
@@ -327,5 +351,11 @@ def enable_resilience : Flag<["-"], "enable-resilience">,
 
 def group_info_path : Separate<["-"], "group-info-path">,
   HelpText<"The path to collect the group information of the compiled module">;
+
+def enable_protocol_typealiases: Flag<["-"], "enable-protocol-typealiases">,
+  HelpText<"Enable typealiases inside protocol declarations">;
+  
+def enable_id_as_any: Flag<["-"], "enable-id-as-any">,
+  HelpText<"Enable importing ObjC 'id' as Swift 'Any' type">;
 
 } // end let Flags = [FrontendOption, NoDriverOption, HelpHidden]

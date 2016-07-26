@@ -13,6 +13,7 @@
 #ifndef SWIFT_BASIC_LAZY_H
 #define SWIFT_BASIC_LAZY_H
 
+#include <memory>
 #ifdef __APPLE__
 #include <dispatch/dispatch.h>
 #else
@@ -79,7 +80,7 @@ template <typename T> inline T &Lazy<T>::get(void (*initCallback)(void*)) {
   return unsafeGetAlreadyInitialized();
 }
 
-} // namespace swift
+} // end namespace swift
 
 #define SWIFT_LAZY_CONSTANT(INITIAL_VALUE) \
   ([]{ \

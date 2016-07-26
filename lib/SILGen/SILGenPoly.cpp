@@ -459,7 +459,8 @@ ManagedValue Transform::transform(ManagedValue v,
     auto class2 = outputSubstType->getClassOrBoundGenericClass();
 
     // CF <-> Objective-C via toll-free bridging.
-    if (class1->isForeign() != class2->isForeign()) {
+    if ((class1->getForeignClassKind() == ClassDecl::ForeignKind::CFType) ^
+        (class2->getForeignClassKind() == ClassDecl::ForeignKind::CFType)) {
        return ManagedValue(SGF.B.createUncheckedRefCast(Loc,
                                                         v.getValue(),
                                                         loweredResultTy),
@@ -2740,7 +2741,7 @@ getWitnessDispatchKind(Type selfType, SILDeclRef witness, bool isFree) {
   bool isExtension = isa<ExtensionDecl>(decl->getDeclContext());
 
   // If we have a final method or a method from an extension that is not
-  // objective c, emit a static reference.
+  // Objective-C, emit a static reference.
   // A natively ObjC method witness referenced this way will end up going
   // through its native thunk, which will redispatch the method after doing
   // bridging just like we want.

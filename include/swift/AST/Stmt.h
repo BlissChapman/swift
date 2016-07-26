@@ -44,7 +44,7 @@ enum class StmtKind {
 /// Stmt - Base class for all statements in swift.
 class alignas(8) Stmt {
   Stmt(const Stmt&) = delete;
-  void operator=(const Stmt&) = delete;
+  Stmt& operator=(const Stmt&) = delete;
 
   /// Kind - The subclass of Stmt that this is.
   unsigned Kind : 31;
@@ -269,13 +269,10 @@ public:
   const VersionRange &getAvailableRange() const { return AvailableRange; }
   void setAvailableRange(const VersionRange &Range) { AvailableRange = Range; }
   
-  void getPlatformKeywordRanges(SmallVectorImpl<CharSourceRange>
-                                &PlatformRanges);
+  void getPlatformKeywordLocs(SmallVectorImpl<SourceLoc> &PlatformLocs);
 };
 
-  
 
-  
 /// This represents an entry in an "if" or "while" condition.  Pattern bindings
 /// can bind any number of names in the pattern binding decl, and may have an
 /// associated where clause.  When "if let" is involved, an arbitrary number of
@@ -1196,7 +1193,7 @@ public:
     return S->getKind() == StmtKind::Throw;
   }
 };
-  
+
 } // end namespace swift
 
-#endif
+#endif // SWIFT_AST_STMT_H

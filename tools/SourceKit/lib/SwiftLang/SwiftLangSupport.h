@@ -21,6 +21,7 @@
 #include "SourceKit/Support/Tracing.h"
 #include "swift/Basic/ThreadSafeRefCounted.h"
 #include "swift/IDE/Formatting.h"
+#include "swift/Index/IndexSymbol.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Mutex.h"
@@ -33,6 +34,7 @@ namespace swift {
   class CompilerInstance;
   class CompilerInvocation;
   class Decl;
+  class Type;
   class AbstractStorageDecl;
   class SourceFile;
   class ValueDecl;
@@ -54,6 +56,7 @@ namespace SourceKit {
   typedef RefPtr<ImmutableTextSnapshot> ImmutableTextSnapshotRef;
   class SwiftASTManager;
   class SwiftLangSupport;
+  class Context;
 
 class SwiftEditorDocument :
     public ThreadSafeRefCountedBase<SwiftEditorDocument> {
@@ -231,6 +234,7 @@ public:
 
   static SourceKit::UIdent getUIDForDecl(const swift::Decl *D,
                                          bool IsRef = false);
+  static SourceKit::UIdent getUIDForExtensionOfDecl(const swift::Decl *D);
   static SourceKit::UIdent getUIDForLocalVar(bool IsRef = false);
   static SourceKit::UIdent getUIDForCodeCompletionDeclKind(
       swift::ide::CodeCompletionDeclKind Kind, bool IsRef = false);
@@ -245,11 +249,26 @@ public:
   static SourceKit::UIdent getUIDForSyntaxStructureElementKind(
       swift::ide::SyntaxStructureElementKind Kind);
 
+  static SourceKit::UIdent getUIDForSymbol(swift::index::SymbolKind kind,
+                                           swift::index::SymbolSubKindSet subKinds,
+                                           bool isRef);
+
+  static std::vector<UIdent> UIDsFromDeclAttributes(const swift::DeclAttributes &Attrs);
+
+
   static bool printDisplayName(const swift::ValueDecl *D, llvm::raw_ostream &OS);
 
   /// Generate a USR for a Decl, including the prefix.
   /// \returns true if the results should be ignored, false otherwise.
   static bool printUSR(const swift::ValueDecl *D, llvm::raw_ostream &OS);
+
+  /// Generate a USR for the Type of a given decl.
+  /// \returns true if the results should be ignored, false otherwise.
+  static bool printDeclTypeUSR(const swift::ValueDecl *D, llvm::raw_ostream &OS);
+
+  /// Generate a USR for of a given type.
+  /// \returns true if the results should be ignored, false otherwise.
+  static bool printTypeUSR(swift::Type Ty, llvm::raw_ostream &OS);
 
   /// Generate a USR for an accessor, including the prefix.
   /// \returns true if the results should be ignored, false otherwise.
@@ -267,6 +286,11 @@ public:
   static void printFullyAnnotatedDeclaration(const swift::ValueDecl *VD,
                                              swift::Type BaseTy,
                                              llvm::raw_ostream &OS);
+
+  static void printFullyAnnotatedSynthesizedDeclaration(
+                                            const swift::ValueDecl *VD,
+                                            swift::NominalTypeDecl *Target,
+                                            llvm::raw_ostream &OS);
 
   /// Tries to resolve the path to the real file-system path. If it fails it
   /// returns the original path;
@@ -313,7 +337,12 @@ public:
                            StringRef ModuleName,
                            Optional<StringRef> Group,
                            ArrayRef<const char *> Args,
-                           bool SynthesizedExtensions) override;
+                           bool SynthesizedExtensions,
+                           Optional<StringRef> InterestedUSR) override;
+
+  void editorOpenTypeInterface(EditorConsumer &Consumer,
+                               ArrayRef<const char *> Args,
+                               StringRef TypeUSR) override;
 
   void editorOpenHeaderInterface(EditorConsumer &Consumer,
                                  StringRef Name,

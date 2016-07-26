@@ -13,48 +13,48 @@
 import ObjectiveC
 import Foundation
 
-internal var _temporaryNSLocaleCurrentLocale: NSLocale? = nil
+internal var _temporaryLocaleCurrentLocale: NSLocale? = nil
 
 extension NSLocale {
   @objc
   public class func _swiftUnittest_currentLocale() -> NSLocale {
-    return _temporaryNSLocaleCurrentLocale!
+    return _temporaryLocaleCurrentLocale!
   }
 }
 
-public func withOverriddenNSLocaleCurrentLocale<Result>(
-  temporaryLocale: NSLocale,
-  @noescape _ body: () -> Result
+public func withOverriddenLocaleCurrentLocale<Result>(
+  _ temporaryLocale: NSLocale,
+  _ body: @noescape () -> Result
 ) -> Result {
   let oldMethod = class_getClassMethod(
-    NSLocale.self, #selector(NSLocale.current))
-  precondition(oldMethod != nil, "could not find +[NSLocale currentLocale]")
+    NSLocale.self, #selector(getter: NSLocale.current))
+  precondition(oldMethod != nil, "could not find +[Locale currentLocale]")
 
   let newMethod = class_getClassMethod(
     NSLocale.self, #selector(NSLocale._swiftUnittest_currentLocale))
-  precondition(newMethod != nil, "could not find +[NSLocale _swiftUnittest_currentLocale]")
+  precondition(newMethod != nil, "could not find +[Locale _swiftUnittest_currentLocale]")
 
-  precondition(_temporaryNSLocaleCurrentLocale == nil,
-    "nested calls to withOverriddenNSLocaleCurrentLocale are not supported")
+  precondition(_temporaryLocaleCurrentLocale == nil,
+    "nested calls to withOverriddenLocaleCurrentLocale are not supported")
 
-  _temporaryNSLocaleCurrentLocale = temporaryLocale
+  _temporaryLocaleCurrentLocale = temporaryLocale
   method_exchangeImplementations(oldMethod, newMethod)
   let result = body()
   method_exchangeImplementations(newMethod, oldMethod)
-  _temporaryNSLocaleCurrentLocale = nil
+  _temporaryLocaleCurrentLocale = nil
 
   return result
 }
 
-public func withOverriddenNSLocaleCurrentLocale<Result>(
-  temporaryLocaleIdentifier: String,
-  @noescape _ body: () -> Result
+public func withOverriddenLocaleCurrentLocale<Result>(
+  _ temporaryLocaleIdentifier: String,
+  _ body: @noescape () -> Result
 ) -> Result {
   precondition(
-    NSLocale.availableLocaleIdentifiers().contains(temporaryLocaleIdentifier),
+    NSLocale.availableLocaleIdentifiers.contains(temporaryLocaleIdentifier),
     "requested locale \(temporaryLocaleIdentifier) is not available")
 
-  return withOverriddenNSLocaleCurrentLocale(
+  return withOverriddenLocaleCurrentLocale(
     NSLocale(localeIdentifier: temporaryLocaleIdentifier), body)
 }
 
@@ -65,11 +65,49 @@ public func withOverriddenNSLocaleCurrentLocale<Result>(
 /// return-autoreleased optimization.)
 @inline(never)
 public func autoreleasepoolIfUnoptimizedReturnAutoreleased(
-  @noescape body: () -> Void
+  invoking body: @noescape () -> Void
 ) {
 #if arch(i386) && (os(iOS) || os(watchOS))
-  autoreleasepool(body)
+  autoreleasepool(invoking: body)
 #else
   body()
 #endif
+}
+
+@_silgen_name("swift_stdlib_NSArray_getObjects")
+internal func _stdlib_NSArray_getObjects(
+  nsArray: AnyObject,
+  objects: AutoreleasingUnsafeMutablePointer<AnyObject?>?,
+  rangeLocation: Int,
+  rangeLength: Int)
+
+extension NSArray {
+  public func available_getObjects(
+    _ objects: AutoreleasingUnsafeMutablePointer<AnyObject?>?, range: NSRange
+  ) {
+    return _stdlib_NSArray_getObjects(
+      nsArray: self,
+      objects: objects,
+      rangeLocation: range.location,
+      rangeLength: range.length)
+  }
+}
+
+@_silgen_name("swift_stdlib_NSDictionary_getObjects")
+func _stdlib_NSDictionary_getObjects(
+  nsDictionary: NSDictionary,
+  objects: AutoreleasingUnsafeMutablePointer<AnyObject?>?,
+  andKeys keys: AutoreleasingUnsafeMutablePointer<AnyObject?>?
+)
+
+extension NSDictionary {
+  public func available_getObjects(
+    _ objects: AutoreleasingUnsafeMutablePointer<AnyObject?>?,
+    andKeys keys: AutoreleasingUnsafeMutablePointer<AnyObject?>?
+  ) {
+    return _stdlib_NSDictionary_getObjects(
+      nsDictionary: self,
+      objects: objects,
+      andKeys: keys)
+  }
 }

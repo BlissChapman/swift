@@ -67,7 +67,8 @@ public:
 
   /// As a convenience, build a metadata object with internal linkage
   /// consisting solely of the standard heap metadata.
-  llvm::Constant *getPrivateMetadata(IRGenModule &IGM) const;
+  llvm::Constant *getPrivateMetadata(IRGenModule &IGM,
+                                     llvm::Constant *captureDescriptor) const;
 };
 
 class HeapNonFixedOffsets : public NonFixedOffsetsImpl {
@@ -115,8 +116,12 @@ void emitDeallocatePartialClassInstance(IRGenFunction &IGF,
                                         llvm::Value *alignMask);
 
 /// Allocate a boxed value.
+///
+/// The interface type is required for emitting reflection metadata.
 OwnedAddress
-emitAllocateBox(IRGenFunction &IGF, CanSILBoxType boxType,
+emitAllocateBox(IRGenFunction &IGF,
+                CanSILBoxType boxType,
+                CanSILBoxType boxInterfaceType,
                 const llvm::Twine &name);
 
 /// Deallocate a box whose value is uninitialized.

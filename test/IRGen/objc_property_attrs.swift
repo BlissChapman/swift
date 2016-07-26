@@ -10,7 +10,7 @@ import Foundation
 @objc protocol P { }
 @objc protocol Q { }
 
-class Foo: NSManagedObject {
+class Foo: ManagedObject {
   // -- POD types:
 
   // nonatomic, readonly, ivar b
@@ -61,5 +61,5 @@ class Foo: NSManagedObject {
   // CHECK: private unnamed_addr constant {{.*}} c"T@\22<_TtP19objc_property_attrs1P_>\22,N,&,Vp\00"
   var p: P?
   // CHECK: private unnamed_addr constant {{.*}} c"T@\22<_TtP19objc_property_attrs1P_><_TtP19objc_property_attrs1Q_>\22,N,&,Vpq\00"
-  var pq: protocol<P, Q>?
+  var pq: (P & Q)?
 }

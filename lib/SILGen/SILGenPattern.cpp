@@ -1031,16 +1031,20 @@ void PatternMatchEmission::emitWildcardDispatch(ClauseMatrix &clauses,
   bool hasGuard = guardExpr != nullptr;
   assert(!hasGuard || !clauses[row].isIrrefutable());
 
-  auto stmt = clauses[row].getClientData<CaseStmt>();
-  ArrayRef<CaseLabelItem> labelItems = stmt->getCaseLabelItems();
-  bool hasMultipleItems = labelItems.size() > 1;
-  
+  auto stmt = clauses[row].getClientData<Stmt>();
+  assert(isa<CaseStmt>(stmt) || isa<CatchStmt>(stmt));
+
+  bool hasMultipleItems = false;
+  if (auto *caseStmt = dyn_cast<CaseStmt>(stmt)) {
+    hasMultipleItems = caseStmt->getCaseLabelItems().size() > 1;
+  }
+
   // Bind the rest of the patterns.
   bindIrrefutablePatterns(clauses[row], args, !hasGuard, hasMultipleItems);
 
   // Emit the guard branch, if it exists.
   if (guardExpr) {
-    SGF.usingImplicitVariablesForPattern(clauses[row].getCasePattern(), stmt, [&]{
+    SGF.usingImplicitVariablesForPattern(clauses[row].getCasePattern(), dyn_cast<CaseStmt>(stmt), [&]{
       this->emitGuardBranch(guardExpr, guardExpr, failure);
     });
   }
@@ -1171,7 +1175,8 @@ void PatternMatchEmission::bindNamedPattern(NamedPattern *pattern,
                                             bool forIrrefutableRow,
                                             bool hasMultipleItems) {
   bindVariable(pattern, pattern->getDecl(), value,
-               pattern->getType()->getCanonicalType(), forIrrefutableRow, hasMultipleItems);
+               pattern->getType()->getCanonicalType(), forIrrefutableRow,
+               hasMultipleItems);
 }
 
 /// Should we take control of the mang
@@ -1589,8 +1594,6 @@ void PatternMatchEmission::emitIsDispatch(ArrayRef<RowToSpecialize> rows,
                                       const FailureHandler &failure) {
   CanType sourceType = rows[0].Pattern->getType()->getCanonicalType();
   CanType targetType = getTargetType(rows[0]);
-
-  SGF.checkForImportedUsedConformances(targetType);
 
   // Make any abstraction modifications necessary for casting.
   SmallVector<ConsumableManagedValue, 4> borrowedValues;
@@ -2183,6 +2186,12 @@ public:
 
 void SILGenFunction::usingImplicitVariablesForPattern(Pattern *pattern, CaseStmt *stmt,
                                                       const llvm::function_ref<void(void)> &f) {
+  // Early exit for CatchStmt
+  if (!stmt) {
+    f();
+    return;
+  }
+
   ArrayRef<CaseLabelItem> labelItems = stmt->getCaseLabelItems();
   auto expectedPattern = labelItems[0].getPattern();
   
@@ -2266,8 +2275,7 @@ void SILGenFunction::emitSwitchStmt(SwitchStmt *S) {
             
             for (auto cmv : argArray) {
               if (cmv.getValue() == value) {
-                if (cmv.hasCleanup())
-                  B.createRetainValue(CurrentSILLoc, value);
+                B.createRetainValue(CurrentSILLoc, value, Atomicity::Atomic);
                 break;
               }
             }

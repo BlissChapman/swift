@@ -67,19 +67,24 @@ class IRGenDebugInfo {
   llvm::DenseMap<TypeBase *, llvm::TrackingMDNodeRef> DITypeCache;
   llvm::StringMap<llvm::TrackingMDNodeRef> DIModuleCache;
   TrackingDIRefMap DIRefMap;
+  std::vector<std::pair<const SILDebugScope *, llvm::TrackingMDNodeRef>>
+      LastInlineChain;
+
+  /// A list of replaceable fwddecls that need to be RAUWed at the end.
+  std::vector<std::pair<TypeBase *, llvm::TrackingMDRef>> ReplaceMap;
 
   llvm::BumpPtrAllocator DebugInfoNames;
   StringRef CWDName;                    /// The current working directory.
   llvm::DICompileUnit *TheCU = nullptr; /// The current compilation unit.
   llvm::DIFile *MainFile = nullptr;     /// The main file.
   llvm::DIModule *MainModule = nullptr; /// The current module.
-  llvm::MDNode *EntryPointFn;           /// Scope of SWIFT_ENTRY_POINT_FUNCTION.
+  llvm::DIScope *EntryPointFn =
+      nullptr;                          /// Scope of SWIFT_ENTRY_POINT_FUNCTION.
   TypeAliasDecl *MetadataTypeDecl;      /// The type decl for swift.type.
   llvm::DIType *InternalType; /// Catch-all type for opaque internal types.
 
   SILLocation::DebugLoc LastDebugLoc; /// The last location that was emitted.
   const SILDebugScope *LastScope;     /// The scope of that last location.
-  bool IsLibrary; /// Whether this is a library or a top level module.
 #ifndef NDEBUG
   /// The basic block where the location was last changed.
   llvm::BasicBlock *LastBasicBlock;
@@ -129,6 +134,12 @@ public:
     Builder.SetCurrentDebugLocation(DL);
   }
 
+  /// Set the location for SWIFT_ENTRY_POINT_FUNCTION.
+  void setEntryPointLoc(IRBuilder &Builder);
+
+  /// Return the scope for  SWIFT_ENTRY_POINT_FUNCTION.
+  llvm::DIScope *getEntryPointFn();
+  
   /// Emit debug info for an import declaration.
   ///
   /// The DWARF output for import decls is similar to that of a using
@@ -147,7 +158,7 @@ public:
   /// \param Fn The IR representation of the function.
   /// \param Rep The calling convention of the function.
   /// \param Ty The signature of the function.
-  llvm::DISubprogram *emitFunction(SILModule &SILMod, const SILDebugScope *DS,
+  llvm::DISubprogram *emitFunction(const SILDebugScope *DS,
                                    llvm::Function *Fn,
                                    SILFunctionTypeRepresentation Rep,
                                    SILType Ty, DeclContext *DeclCtx = nullptr);
@@ -160,10 +171,10 @@ public:
   /// scope, and finally sets it using setCurrentLoc.
   inline void emitArtificialFunction(IRGenFunction &IGF, llvm::Function *Fn,
                                      SILType SILTy = SILType()) {
-    emitArtificialFunction(*IGF.IGM.SILMod, IGF.Builder, Fn, SILTy);
+    emitArtificialFunction(IGF.Builder, Fn, SILTy);
   }
 
-  void emitArtificialFunction(SILModule &SILMod, IRBuilder &Builder,
+  void emitArtificialFunction(IRBuilder &Builder,
                               llvm::Function *Fn, SILType SILTy = SILType());
 
   /// Emit a dbg.declare intrinsic at the current insertion point and
@@ -171,7 +182,8 @@ public:
   void emitVariableDeclaration(IRBuilder &Builder,
                                ArrayRef<llvm::Value *> Storage,
                                DebugTypeInfo Ty, const SILDebugScope *DS,
-                               StringRef Name, unsigned ArgNo = 0,
+                               ValueDecl *VarDecl, StringRef Name,
+                               unsigned ArgNo = 0,
                                IndirectionKind = DirectValue,
                                ArtificialKind = RealValue);
 
@@ -182,9 +194,10 @@ public:
                         const SILDebugScope *DS);
 
   /// Create debug metadata for a global variable.
-  void emitGlobalVariableDeclaration(llvm::GlobalValue *Storage, StringRef Name,
+  void emitGlobalVariableDeclaration(llvm::Constant *Storage, StringRef Name,
                                      StringRef LinkageName,
                                      DebugTypeInfo DebugType,
+                                     bool IsLocalToUnit,
                                      Optional<SILLocation> Loc);
 
   /// Emit debug metadata for type metadata (for generic types). So meta.
@@ -213,6 +226,8 @@ private:
   /// local reference to the type.
   llvm::DIType *createType(DebugTypeInfo DbgTy, StringRef MangledName,
                            llvm::DIScope *Scope, llvm::DIFile *File);
+  /// Get a previously created type from the cache.
+  llvm::DIType *getTypeOrNull(TypeBase *Ty);
   /// Get the DIType corresponding to this DebugTypeInfo from the cache,
   /// or build a fresh DIType otherwise.  There is the underlying
   /// assumption that no two types that share the same canonical type
@@ -304,6 +319,17 @@ private:
   llvm::DIType *createDoublePointerSizedStruct(
       llvm::DIScope *Scope, StringRef Name, llvm::DIType *PointeeTy,
       llvm::DIFile *File, unsigned Line, unsigned Flags, StringRef MangledName);
+
+  /// Create DWARF debug info for a function pointer type.
+  llvm::DIType *createFunctionPointer(DebugTypeInfo DbgTy, llvm::DIScope *Scope,
+                                      unsigned SizeInBits, unsigned AlignInBits,
+                                      unsigned Flags, StringRef MangledName);
+
+  /// Create DWARF debug info for a tuple type.
+  llvm::DIType *createTuple(DebugTypeInfo DbgTy, llvm::DIScope *Scope,
+                            unsigned SizeInBits, unsigned AlignInBits,
+                            unsigned Flags, StringRef MangledName);
+
   /// Create an opaque struct with a mangled name.
   llvm::DIType *createOpaqueStruct(llvm::DIScope *Scope, StringRef Name,
                                    llvm::DIFile *File, unsigned Line,

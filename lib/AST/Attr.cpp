@@ -23,6 +23,7 @@
 #include "swift/Basic/Defer.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/ADT/StringSwitch.h"
 using namespace swift;
 
@@ -42,6 +43,16 @@ TypeAttrKind TypeAttributes::getAttrKindFromString(StringRef Str) {
 #include "swift/AST/Attr.def"
   .Default(TAK_Count);
 }
+
+/// Return the name (like "autoclosure") for an attribute ID.
+const char *TypeAttributes::getAttrName(TypeAttrKind kind) {
+  switch (kind) {
+  default: llvm_unreachable("Invalid attribute ID");
+#define TYPE_ATTR(X) case TAK_##X: return #X;
+#include "swift/AST/Attr.def"
+  }
+}
+
 
 
 /// Given a name like "inline", return the decl attribute ID that corresponds
@@ -72,6 +83,21 @@ bool DeclAttribute::canAttributeAppearOnDeclKind(DeclAttrKind DAK, DeclKind DK) 
 #include "swift/AST/DeclNodes.def"
   }
   llvm_unreachable("bad DeclKind");
+}
+
+bool DeclAttributes::isUnavailableInCurrentSwift() const {
+  for (auto attr : *this) {
+    if (auto available = dyn_cast<AvailableAttr>(attr)) {
+      if (available->isInvalid())
+        continue;
+
+      if (available->getUnconditionalAvailability() ==
+            UnconditionalAvailabilityKind::UnavailableInCurrentSwift)
+        return true;
+    }
+  }
+
+  return false;
 }
 
 const AvailableAttr *DeclAttributes::getUnavailable(
@@ -280,6 +306,7 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options) 
   case DAK_ObjCBridged:
   case DAK_SynthesizedProtocol:
   case DAK_ShowInInterface:
+  case DAK_Rethrows:
     return false;
   default:
     break;
@@ -316,7 +343,9 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options) 
   }
 
   Printer.callPrintStructurePre(PrintStructureKind::BuiltinAttribute);
-  defer { Printer.printStructurePost(PrintStructureKind::BuiltinAttribute); };
+  SWIFT_DEFER {
+    Printer.printStructurePost(PrintStructureKind::BuiltinAttribute);
+  };
 
   switch (getKind()) {
   case DAK_Semantics:
@@ -421,27 +450,6 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options) 
     break;
   }
 
-  case DAK_WarnUnusedResult: {
-    Printer.printAttrName("@warn_unused_result");
-    auto *attr = cast<WarnUnusedResultAttr>(this);
-    bool printedParens = false;
-    if (!attr->getMessage().empty()) {
-      Printer << "(message: \"" << attr->getMessage() << "\"";
-      printedParens = true;
-    }
-    if (!attr->getMutableVariant().empty()) {
-      if (printedParens)
-        Printer << ", ";
-      else
-        Printer << "(";
-      Printer << "mutable_variant: \"" << attr->getMutableVariant() << "\"";
-      printedParens = true;
-    }
-    if (printedParens)
-      Printer << ")";
-    break;
-  }
-
   case DAK_Specialize: {
     Printer << "@" << getAttrName() << "(";
     auto *attr = cast<SpecializeAttr>(this);
@@ -539,6 +547,8 @@ StringRef DeclAttribute::getAttrName() const {
     switch (cast<AbstractAccessibilityAttr>(this)->getAccess()) {
     case Accessibility::Private:
       return "private";
+    case Accessibility::FilePrivate:
+      return "fileprivate";
     case Accessibility::Internal:
       return "internal";
     case Accessibility::Public:
@@ -560,8 +570,6 @@ StringRef DeclAttribute::getAttrName() const {
     return "<<synthesized protocol>>";
   case DAK_Swift3Migration:
     return "swift3_migration";
-  case DAK_WarnUnusedResult:
-    return "warn_unused_result";
   case DAK_Specialize:
     return "_specialize";
   }
@@ -671,9 +679,9 @@ ObjCAttr *ObjCAttr::clone(ASTContext &context) const {
 
 AvailableAttr *
 AvailableAttr::createUnconditional(ASTContext &C,
-                                      StringRef Message,
-                                      StringRef Rename,
-                                      UnconditionalAvailabilityKind Reason) {
+                                   StringRef Message,
+                                   StringRef Rename,
+                                   UnconditionalAvailabilityKind Reason) {
   assert(Reason != UnconditionalAvailabilityKind::None);
   clang::VersionTuple NoVersion;
   return new (C) AvailableAttr(
@@ -693,6 +701,7 @@ bool AvailableAttr::isUnconditionallyUnavailable() const {
 
   case UnconditionalAvailabilityKind::Unavailable:
   case UnconditionalAvailabilityKind::UnavailableInSwift:
+  case UnconditionalAvailabilityKind::UnavailableInCurrentSwift:
     return true;
   }
 }
@@ -702,6 +711,7 @@ bool AvailableAttr::isUnconditionallyDeprecated() const {
   case UnconditionalAvailabilityKind::None:
   case UnconditionalAvailabilityKind::Unavailable:
   case UnconditionalAvailabilityKind::UnavailableInSwift:
+  case UnconditionalAvailabilityKind::UnavailableInCurrentSwift:
     return false;
 
   case UnconditionalAvailabilityKind::Deprecated:

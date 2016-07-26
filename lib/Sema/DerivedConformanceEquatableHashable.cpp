@@ -171,23 +171,23 @@ static ValueDecl *
 deriveEquatable_enum_eq(TypeChecker &tc, Decl *parentDecl, EnumDecl *enumDecl) {
   // enum SomeEnum<T...> {
   //   case A, B, C
-  // }
-  // @derived
-  // func ==<T...>(a: SomeEnum<T...>, b: SomeEnum<T...>) -> Bool {
-  //   var index_a: Int
-  //   switch a {
-  //   case .A: index_a = 0
-  //   case .B: index_a = 1
-  //   case .C: index_a = 2
+  //
+  //   @derived
+  //   func ==(a: SomeEnum<T...>, b: SomeEnum<T...>) -> Bool {
+  //     var index_a: Int
+  //     switch a {
+  //     case .A: index_a = 0
+  //     case .B: index_a = 1
+  //     case .C: index_a = 2
+  //     }
+  //     var index_b: Int
+  //     switch b {
+  //     case .A: index_b = 0
+  //     case .B: index_b = 1
+  //     case .C: index_b = 2
+  //     }
+  //     return index_a == index_b
   //   }
-  //   var index_b: Int
-  //   switch b {
-  //   case .A: index_b = 0
-  //   case .B: index_b = 1
-  //   case .C: index_b = 2
-  //   }
-  //   return index_a == index_b
-  // }
   
   ASTContext &C = tc.Context;
   
@@ -199,24 +199,30 @@ deriveEquatable_enum_eq(TypeChecker &tc, Decl *parentDecl, EnumDecl *enumDecl) {
                              Identifier(), SourceLoc(), C.getIdentifier(s),
                              enumTy, parentDC);
   };
-  
-  auto params = ParameterList::create(C, {
-    getParamDecl("a"),
-    getParamDecl("b")
-  });
-  
-  auto genericParams = parentDC->getGenericParamsOfContext();
-  auto boolTy = C.getBoolDecl()->getDeclaredType();
-  auto moduleDC = parentDecl->getModuleContext();
 
-  DeclName name(C, C.Id_EqualsOperator, params);
-  auto eqDecl = FuncDecl::create(C, SourceLoc(), StaticSpellingKind::None,
-                           SourceLoc(), name,
-                           SourceLoc(), SourceLoc(), SourceLoc(),
-                           genericParams,
-                           Type(), params,
-                           TypeLoc::withoutLoc(boolTy),
-                           &moduleDC->getDerivedFileUnit());
+  auto selfDecl = ParamDecl::createUnboundSelf(SourceLoc(), parentDC);
+  
+  ParameterList *params[] = {
+    ParameterList::createWithoutLoc(selfDecl),
+    ParameterList::create(C, {
+        getParamDecl("a"),
+        getParamDecl("b")
+    })
+  };
+
+  auto boolTy = C.getBoolDecl()->getDeclaredType();
+
+  DeclName name(C, C.Id_EqualsOperator, params[1]);
+  auto eqDecl =
+    FuncDecl::create(C, /*StaticLoc=*/SourceLoc(),
+                     StaticSpellingKind::KeywordStatic,
+                     /*FuncLoc=*/SourceLoc(), name, /*NameLoc=*/SourceLoc(),
+                     /*Throws=*/false, /*ThrowsLoc=*/SourceLoc(),
+                     /*AccessorKeywordLoc=*/SourceLoc(),
+                     /*GenericParams=*/nullptr,
+                     params, Type(),
+                     TypeLoc::withoutLoc(boolTy),
+                     parentDC);
   eqDecl->setImplicit();
   eqDecl->getAttrs().add(new (C) InfixAttr(/*implicit*/false));
   auto op = C.getStdlibModule()->lookupInfixOperator(C.Id_EqualsOperator);
@@ -230,33 +236,41 @@ deriveEquatable_enum_eq(TypeChecker &tc, Decl *parentDecl, EnumDecl *enumDecl) {
     return nullptr;
   }
 
+  // Fill in the 'self' type.
+  Type selfTy = eqDecl->computeSelfType();
+  selfDecl->overwriteType(selfTy);
+
   eqDecl->setOperatorDecl(op);
-  eqDecl->setDerivedForTypeDecl(enumDecl);
   eqDecl->setBodySynthesizer(&deriveBodyEquatable_enum_eq);
 
   // Compute the type.
-  auto paramsTy = params->getType(C);
-  Type fnTy;
+  GenericParamList *genericParams = eqDecl->getGenericParamsOfContext();
+  Type paramsTy = params[1]->getType(tc.Context);
+  Type fnTy = FunctionType::get(paramsTy, boolTy);
   if (genericParams)
-    fnTy = PolymorphicFunctionType::get(paramsTy, boolTy, genericParams);
+    fnTy = PolymorphicFunctionType::get(selfTy, fnTy, genericParams);
   else
-    fnTy = FunctionType::get(paramsTy, boolTy);
+    fnTy = FunctionType::get(selfTy, fnTy);
   eqDecl->setType(fnTy);
 
   // Compute the interface type.
   Type interfaceTy;
+  Type selfIfaceTy = eqDecl->computeInterfaceSelfType(false);
   if (auto genericSig = parentDC->getGenericSignatureOfContext()) {
-    auto enumIfaceTy = parentDC->getDeclaredInterfaceType();
+    eqDecl->setGenericSignature(genericSig);
+
+    Type enumIfaceTy = parentDC->getDeclaredInterfaceType();
     TupleTypeElt ifaceParamElts[] = {
       enumIfaceTy, enumIfaceTy,
     };
     auto ifaceParamsTy = TupleType::get(ifaceParamElts, C);
-    
-    interfaceTy = GenericFunctionType::get(
-                                     genericSig, ifaceParamsTy, boolTy,
-                                     AnyFunctionType::ExtInfo());
+    interfaceTy = FunctionType::get(ifaceParamsTy, boolTy,
+                                    AnyFunctionType::ExtInfo());
+    interfaceTy = GenericFunctionType::get(genericSig, selfIfaceTy, interfaceTy,
+                                           AnyFunctionType::ExtInfo());
   } else {
     interfaceTy = FunctionType::get(paramsTy, boolTy);
+    interfaceTy = FunctionType::get(selfIfaceTy, interfaceTy);
   }
   eqDecl->setInterfaceType(interfaceTy);
 
@@ -271,8 +285,8 @@ deriveEquatable_enum_eq(TypeChecker &tc, Decl *parentDecl, EnumDecl *enumDecl) {
   if (enumDecl->hasClangNode())
     tc.Context.addExternalDecl(eqDecl);
   
-  // Since it's an operator we insert the decl after the type at global scope.
-  insertOperatorDecl(C, cast<IterableDeclContext>(parentDecl), eqDecl);
+  // Add the operator to the parent scope.
+  cast<IterableDeclContext>(parentDecl)->addMember(eqDecl);
 
   return eqDecl;
 }
@@ -345,7 +359,7 @@ deriveHashable_enum_hashValue(TypeChecker &tc, Decl *parentDecl,
   Type intType = C.getIntDecl()->getDeclaredType();
   
   // We can't form a Hashable conformance if Int isn't Hashable or
-  // IntegerLiteralConvertible.
+  // ExpressibleByIntegerLiteral.
   if (!tc.conformsToProtocol(intType,C.getProtocol(KnownProtocolKind::Hashable),
                              enumDecl, None)) {
     tc.diagnose(enumDecl->getLoc(), diag::broken_int_hashable_conformance);
@@ -353,14 +367,14 @@ deriveHashable_enum_hashValue(TypeChecker &tc, Decl *parentDecl,
   }
 
   ProtocolDecl *intLiteralProto =
-      C.getProtocol(KnownProtocolKind::IntegerLiteralConvertible);
+      C.getProtocol(KnownProtocolKind::ExpressibleByIntegerLiteral);
   if (!tc.conformsToProtocol(intType, intLiteralProto, enumDecl, None)) {
     tc.diagnose(enumDecl->getLoc(),
                 diag::broken_int_integer_literal_convertible_conformance);
     return nullptr;
   }
   
-  auto selfDecl = ParamDecl::createSelf(SourceLoc(), parentDC);
+  auto selfDecl = ParamDecl::createUnboundSelf(SourceLoc(), parentDC);
   
   ParameterList *params[] = {
     ParameterList::createWithoutLoc(selfDecl),
@@ -368,10 +382,13 @@ deriveHashable_enum_hashValue(TypeChecker &tc, Decl *parentDecl,
   };
   
   FuncDecl *getterDecl =
-      FuncDecl::create(C, SourceLoc(), StaticSpellingKind::None, SourceLoc(),
-                       Identifier(), SourceLoc(), SourceLoc(), SourceLoc(),
-                       nullptr, Type(), params, TypeLoc::withoutLoc(intType),
-                       parentDC);
+      FuncDecl::create(C, /*StaticLoc=*/SourceLoc(), StaticSpellingKind::None,
+                       /*FuncLoc=*/SourceLoc(),
+                       Identifier(), /*NameLoc=*/SourceLoc(),
+                       /*Throws=*/false, /*ThrowsLoc=*/SourceLoc(),
+                       /*AccessorKeywordLoc=*/SourceLoc(),
+                       /*GenericParams=*/nullptr, params,
+                       Type(), TypeLoc::withoutLoc(intType), parentDC);
   getterDecl->setImplicit();
   getterDecl->setBodySynthesizer(deriveBodyHashable_enum_hashValue);
 
@@ -392,10 +409,11 @@ deriveHashable_enum_hashValue(TypeChecker &tc, Decl *parentDecl,
   // Compute the interface type of hashValue().
   Type interfaceType;
   Type selfIfaceType = getterDecl->computeInterfaceSelfType(false);
-  if (auto sig = parentDC->getGenericSignatureOfContext())
+  if (auto sig = parentDC->getGenericSignatureOfContext()) {
+    getterDecl->setGenericSignature(sig);
     interfaceType = GenericFunctionType::get(sig, selfIfaceType, methodType,
                                              AnyFunctionType::ExtInfo());
-  else
+  } else
     interfaceType = FunctionType::get(selfType, methodType);
   
   getterDecl->setInterfaceType(interfaceType);

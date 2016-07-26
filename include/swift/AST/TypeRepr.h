@@ -46,16 +46,22 @@ class alignas(8) TypeRepr {
   void operator=(const TypeRepr&) = delete;
 
   /// \brief The subclass of TypeRepr that this is.
-  unsigned Kind : 7;
+  unsigned Kind : 6;
 
   /// Whether this type representation is known to contain an invalid
   /// type.
   unsigned Invalid : 1;
 
+  /// Whether this type representation had a warning emitted related to it.
+  /// This is a hack related to how we resolve type exprs multiple times in
+  /// generic contexts.
+  unsigned Warned : 1;
+
   SourceLoc getLocImpl() const { return getStartLoc(); }
 
 protected:
-  TypeRepr(TypeReprKind K) : Kind(static_cast<unsigned>(K)), Invalid(false) {}
+  TypeRepr(TypeReprKind K)
+    : Kind(static_cast<unsigned>(K)), Invalid(false), Warned(false) {}
 
 public:
   TypeReprKind getKind() const { return static_cast<TypeReprKind>(Kind); }
@@ -66,6 +72,11 @@ public:
   /// Note that this type representation describes an invalid type.
   void setInvalid() { Invalid = true; }
 
+  /// If a warning is produced about this type repr, keep track of that so we
+  /// don't emit another one upon further reanalysis.
+  bool isWarnedAbout() const { return Warned; }
+  void setWarned() { Warned = true; }
+  
   /// Get the representative location for pointing at this type.
   SourceLoc getLoc() const;
 
@@ -151,6 +162,7 @@ public:
   }
 
   const TypeAttributes &getAttrs() const { return Attrs; }
+  void setAttrs(const TypeAttributes &attrs) { Attrs = attrs; }
   TypeRepr *getTypeRepr() const { return Ty; }
 
   void printAttrs(llvm::raw_ostream &OS) const;
@@ -601,38 +613,44 @@ private:
 
 /// \brief A protocol composite type.
 /// \code
-///   protocol<Foo, Bar>
+///   Foo & Bar
 /// \endcode
 class ProtocolCompositionTypeRepr : public TypeRepr {
   ArrayRef<IdentTypeRepr *> Protocols;
-  SourceLoc ProtocolLoc;
-  SourceRange AngleBrackets;
+  SourceLoc FirstTypeLoc;
+  SourceRange CompositionRange;
 
 public:
   ProtocolCompositionTypeRepr(ArrayRef<IdentTypeRepr *> Protocols,
-                              SourceLoc ProtocolLoc,
-                              SourceRange AngleBrackets)
+                              SourceLoc FirstTypeLoc,
+                              SourceRange CompositionRange)
     : TypeRepr(TypeReprKind::ProtocolComposition), Protocols(Protocols),
-      ProtocolLoc(ProtocolLoc), AngleBrackets(AngleBrackets) {
+    FirstTypeLoc(FirstTypeLoc), CompositionRange(CompositionRange) {
   }
 
   ArrayRef<IdentTypeRepr *> getProtocols() const { return Protocols; }
-  SourceLoc getProtocolLoc() const { return ProtocolLoc; }
-  SourceRange getAngleBrackets() const { return AngleBrackets; }
+  SourceLoc getSourceLoc() const { return FirstTypeLoc; }
+  SourceRange getCompositionRange() const { return CompositionRange; }
 
   static ProtocolCompositionTypeRepr *create(ASTContext &C,
                                              ArrayRef<IdentTypeRepr*> Protocols,
-                                             SourceLoc ProtocolLoc,
-                                             SourceRange AngleBrackets);
-
+                                             SourceLoc FirstTypeLoc,
+                                             SourceRange CompositionRange);
+  
+  static ProtocolCompositionTypeRepr *createEmptyComposition(ASTContext &C,
+                                                             SourceLoc AnyLoc) {
+    return ProtocolCompositionTypeRepr::create(C, {}, AnyLoc, {AnyLoc, AnyLoc});
+  }
+  
   static bool classof(const TypeRepr *T) {
     return T->getKind() == TypeReprKind::ProtocolComposition;
   }
   static bool classof(const ProtocolCompositionTypeRepr *T) { return true; }
 
 private:
-  SourceLoc getStartLocImpl() const { return ProtocolLoc; }
-  SourceLoc getEndLocImpl() const { return AngleBrackets.End; }
+  SourceLoc getStartLocImpl() const { return FirstTypeLoc; }
+  SourceLoc getLocImpl() const { return CompositionRange.Start; }
+  SourceLoc getEndLocImpl() const { return CompositionRange.End; }
   void printImpl(ASTPrinter &Printer, const PrintOptions &Opts) const;
   friend class TypeRepr;
 };

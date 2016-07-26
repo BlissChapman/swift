@@ -53,9 +53,9 @@ ValueDecl *DerivedConformance::getDerivableRequirement(NominalTypeDecl *nominal,
     if (name.isSimpleName(ctx.Id_hashValue))
       return getRequirement(KnownProtocolKind::Hashable);
 
-    // ErrorProtocol._code
+    // Error._code
     if (name.isSimpleName(ctx.Id_code_))
-      return getRequirement(KnownProtocolKind::ErrorProtocol);
+      return getRequirement(KnownProtocolKind::Error);
 
     // _BridgedNSError._nsErrorDomain
     if (name.isSimpleName(ctx.Id_nsErrorDomain))
@@ -93,26 +93,6 @@ ValueDecl *DerivedConformance::getDerivableRequirement(NominalTypeDecl *nominal,
   return nullptr;
 }
 
-void DerivedConformance::insertOperatorDecl(ASTContext &C,
-                                            IterableDeclContext *scope,
-                                            Decl *member) {
-  // Find the module.
-  auto mod = member->getModuleContext();
-
-  // Add it to the module in a DerivedFileUnit.
-  mod->getDerivedFileUnit().addDerivedDecl(cast<FuncDecl>(member));
-
-  // Add it as a derived global decl to the nominal type.
-  auto oldDerived = scope->getDerivedGlobalDecls();
-  auto oldSize = std::distance(oldDerived.begin(), oldDerived.end());
-  auto newDerived = C.Allocate<Decl*>(oldSize + 1);
-
-  std::move(oldDerived.begin(), oldDerived.end(), newDerived.begin());
-  newDerived[oldSize] = member;
-
-  scope->setDerivedGlobalDecls(newDerived);
-}
-
 DeclRefExpr *
 DerivedConformance::createSelfDeclRef(AbstractFunctionDecl *fn) {
   ASTContext &C = fn->getASTContext();
@@ -129,16 +109,18 @@ FuncDecl *DerivedConformance::declareDerivedPropertyGetter(TypeChecker &tc,
                                                  bool isStatic) {
   auto &C = tc.Context;
   auto parentDC = cast<DeclContext>(parentDecl);
-  auto selfDecl = ParamDecl::createSelf(SourceLoc(), parentDC, isStatic);
+  auto selfDecl = ParamDecl::createUnboundSelf(SourceLoc(), parentDC, isStatic);
   ParameterList *params[] = {
     ParameterList::createWithoutLoc(selfDecl),
     ParameterList::createEmpty(C)
   };
   
   FuncDecl *getterDecl =
-    FuncDecl::create(C, SourceLoc(), StaticSpellingKind::None, SourceLoc(),
-                     DeclName(), SourceLoc(), SourceLoc(), SourceLoc(),
-                     nullptr, Type(), params,
+    FuncDecl::create(C, /*StaticLoc=*/SourceLoc(), StaticSpellingKind::None,
+                     /*FuncLoc=*/SourceLoc(), DeclName(), /*NameLoc=*/SourceLoc(),
+                     /*Throws=*/false, /*ThrowsLoc=*/SourceLoc(),
+                     /*AccessorKeywordLoc=*/SourceLoc(),
+                     nullptr, params, Type(),
                      TypeLoc::withoutLoc(propertyContextType), parentDC);
   getterDecl->setImplicit();
   getterDecl->setStatic(isStatic);
@@ -161,11 +143,12 @@ FuncDecl *DerivedConformance::declareDerivedPropertyGetter(TypeChecker &tc,
   Type interfaceType = FunctionType::get(TupleType::getEmpty(C),
                                          propertyInterfaceType);
   Type selfInterfaceType = getterDecl->computeInterfaceSelfType(false);
-  if (auto sig = parentDC->getGenericSignatureOfContext())
+  if (auto sig = parentDC->getGenericSignatureOfContext()) {
+    getterDecl->setGenericSignature(sig);
     interfaceType = GenericFunctionType::get(sig, selfInterfaceType,
                                              interfaceType,
                                              FunctionType::ExtInfo());
-  else
+  } else
     interfaceType = type;
   getterDecl->setInterfaceType(interfaceType);
   getterDecl->setAccessibility(typeDecl->getFormalAccess());

@@ -20,6 +20,7 @@
 
 #include "SwiftStdint.h"
 #include "HeapObject.h"
+#include "Visibility.h"
 
 #ifdef __cplusplus
 namespace swift { extern "C" {
@@ -35,11 +36,11 @@ struct _SwiftEmptyArrayStorage {
   struct _SwiftArrayBodyStorage body;
 };
 
-extern struct _SwiftEmptyArrayStorage _swiftEmptyArrayStorage;
+extern SWIFT_RUNTIME_STDLIB_INTERFACE
+struct _SwiftEmptyArrayStorage _swiftEmptyArrayStorage;
 
-extern __swift_uint64_t _swift_stdlib_HashingDetail_fixedSeedOverride;
-
-extern void *_swift_stdlib_ProcessArguments;
+extern SWIFT_RUNTIME_STDLIB_INTERFACE
+__swift_uint64_t _swift_stdlib_HashingDetail_fixedSeedOverride;
 
 #ifdef __cplusplus
 }} // extern "C", namespace swift

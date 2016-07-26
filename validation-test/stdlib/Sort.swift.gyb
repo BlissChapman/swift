@@ -1,20 +1,10 @@
-// RUN: rm -f %t.swift %t.out
-
-// RUN: %S/../../utils/gyb %s -o %t.swift
-// RUN: %S/../../utils/line-directive %t.swift -- %target-build-swift %t.swift -o %t.out
-// RUN: %S/../../utils/line-directive %t.swift -- %target-run %t.out
+// RUN: %target-run-simple-swiftgyb
 // REQUIRES: executable_test
 
 import StdlibUnittest
 import StdlibCollectionUnittest
 import SwiftPrivate
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 // FIXME(prext): fold this test into Algorithm.swift.gyb.
 
@@ -23,7 +13,7 @@ var Algorithm = TestSuite("Algorithm")
 // Check if one array is a correctly sorted version of another array.
 // We can't simply sort both arrays and compare them, because it is needed to
 // check correctness of sorting itself.
-func expectSortedCollection(sortedAry: [Int], _ originalAry: [Int]) {
+func expectSortedCollection(_ sortedAry: [Int], _ originalAry: [Int]) {
   expectEqual(sortedAry.count, originalAry.count)
   var sortedVals = [Int:Int]()
   var originalVals = [Int:Int]()
@@ -56,17 +46,19 @@ func expectSortedCollection(sortedAry: [Int], _ originalAry: [Int]) {
 }
 
 func expectSortedCollection(
-  sortedAry: [Int],
+  _ sortedAry: [Int],
   _ originalAry: ContiguousArray<Int>
 ) {
   expectSortedCollection(sortedAry, Array(originalAry))
 }
 
-func expectSortedCollection(sortedAry: ArraySlice<Int>, _ originalAry: ArraySlice<Int>) {
+func expectSortedCollection(_ sortedAry: ArraySlice<Int>, _ originalAry: ArraySlice<Int>) {
   expectSortedCollection([Int](sortedAry), [Int](originalAry))
 }
 
-class OffsetCollection : MutableCollection {
+class OffsetCollection : MutableCollection, RandomAccessCollection {
+  typealias Indices = CountableRange<Int>
+  
   let offset: Int
   var data: [Int] = []
   let forward: Bool
@@ -85,8 +77,18 @@ class OffsetCollection : MutableCollection {
     self.offset = offset
     self.forward = forward
   }
+  typealias Index = Int
+  subscript(bounds: Range<Int>) -> MutableRandomAccessSlice<OffsetCollection> {
+    get {
+      return MutableRandomAccessSlice(base: self, bounds: bounds)
+    }
+    set {
+      for i in CountableRange(bounds) {
+        self[i] = newValue[i]
+      }
+    }
+  }
 }
-
 
 // Generate two versions of tests: one for sort with explicitly passed
 // predicate and the other using default comparison operator.
@@ -97,7 +99,7 @@ class OffsetCollection : MutableCollection {
 %   for p in withPredicateValues:
 // workaround for <rdar://problem/18900352> gyb miscompiles nested loops
 %     comparePredicate = "<" if p else ""
-%     commaComparePredicate = ", isOrderedBefore: <" if p else ""
+%     commaComparePredicate = ", by: <" if p else ""
 %     name = "lessPredicate" if p else "noPredicate"
 
 Algorithm.test("${t}/sorted/${name}") {
@@ -108,7 +110,7 @@ Algorithm.test("${t}/sorted/${name}") {
 
   // Similar test for sorting with predicate
 %       if comparePredicate:
-  sortedAry1 = ary.sorted(isOrderedBefore: ${comparePredicate})
+  sortedAry1 = ary.sorted(by: ${comparePredicate})
 %       else:
   sortedAry1 = ary.sorted()
 %       end
@@ -150,8 +152,9 @@ Algorithm.test("sort/CollectionsWithUnusualIndices") {
 }
 
 Algorithm.test("partition/CrashOnSingleElement") {
-  var a = DefaultedRandomAccessMutableCollection([10])
-  expectEqual(a.startIndex, a.partition())
+  var a = DefaultedMutableRandomAccessCollection([10])
+  let first = a.first!
+  expectEqual(a.startIndex, a.partition(by: {$0 >= first}))
 }
 
 runAllTests()

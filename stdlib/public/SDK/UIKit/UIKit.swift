@@ -13,13 +13,29 @@
 import Foundation
 @_exported import UIKit
 
+//===----------------------------------------------------------------------===//
+// UIGeometry
+//===----------------------------------------------------------------------===//
+
+public extension UIEdgeInsets {
+  static var zero: UIEdgeInsets {
+    @_transparent // @fragile
+    get { return UIEdgeInsets(top: 0.0, left: 0.0, bottom: 0.0, right: 0.0) }
+  }
+}
+
+public extension UIOffset {
+  static var zero: UIOffset {
+    @_transparent // @fragile
+    get { return UIOffset(horizontal: 0.0, vertical: 0.0) }
+  }
+}
 
 //===----------------------------------------------------------------------===//
 // Equatable types.
 //===----------------------------------------------------------------------===//
 
 @_transparent // @fragile
-@warn_unused_result
 public func == (lhs: UIEdgeInsets, rhs: UIEdgeInsets) -> Bool {
   return lhs.top == rhs.top &&
          lhs.left == rhs.left &&
@@ -30,7 +46,6 @@ public func == (lhs: UIEdgeInsets, rhs: UIEdgeInsets) -> Bool {
 extension UIEdgeInsets : Equatable {}
 
 @_transparent // @fragile
-@warn_unused_result
 public func == (lhs: UIOffset, rhs: UIOffset) -> Bool {
   return lhs.horizontal == rhs.horizontal &&
          lhs.vertical == rhs.vertical
@@ -68,23 +83,20 @@ public extension UIDeviceOrientation {
   }
 }
 
-@warn_unused_result
 public func UIDeviceOrientationIsLandscape(
-  orientation: UIDeviceOrientation
+  _ orientation: UIDeviceOrientation
 ) -> Bool {
   return orientation.isLandscape
 }
 
-@warn_unused_result
 public func UIDeviceOrientationIsPortrait(
-  orientation: UIDeviceOrientation
+  _ orientation: UIDeviceOrientation
 ) -> Bool {
   return orientation.isPortrait
 }
 
-@warn_unused_result
 public func UIDeviceOrientationIsValidInterfaceOrientation(
-  orientation: UIDeviceOrientation) -> Bool
+  _ orientation: UIDeviceOrientation) -> Bool
 {
   return orientation.isValidInterfaceOrientation
 }
@@ -105,15 +117,13 @@ public extension UIInterfaceOrientation {
   }
 }
 
-@warn_unused_result
 public func UIInterfaceOrientationIsPortrait(
-  orientation: UIInterfaceOrientation) -> Bool {
+  _ orientation: UIInterfaceOrientation) -> Bool {
   return orientation.isPortrait
 }
 
-@warn_unused_result
 public func UIInterfaceOrientationIsLandscape(
-  orientation: UIInterfaceOrientation
+  _ orientation: UIInterfaceOrientation
 ) -> Bool {
   return orientation.isLandscape
 }
@@ -170,8 +180,8 @@ internal struct _UIViewQuickLookState {
   static var views = Set<UIView>()
 }
 
-extension UIView : CustomPlaygroundQuickLookable {
-  public var customPlaygroundQuickLook: PlaygroundQuickLook {
+extension UIView : _DefaultCustomPlaygroundQuickLookable {
+  public var _defaultCustomPlaygroundQuickLook: PlaygroundQuickLook {
     if _UIViewQuickLookState.views.contains(self) {
       return .view(UIImage())
     } else {
@@ -187,7 +197,7 @@ extension UIView : CustomPlaygroundQuickLookable {
       // be present.)
       let ctx: CGContext! = UIGraphicsGetCurrentContext()
       UIColor(white:1.0, alpha:0.0).set()
-      CGContextFillRect(ctx, bounds)
+      ctx.fill(bounds)
       layer.render(in: ctx)
 
       let image: UIImage! = UIGraphicsGetImageFromCurrentImageContext()
@@ -201,9 +211,10 @@ extension UIView : CustomPlaygroundQuickLookable {
 }
 #endif
 
-extension UIColor : _ColorLiteralConvertible {
-  public required convenience init(colorLiteralRed red: Float, green: Float,
-                                   blue: Float, alpha: Float) {
+extension UIColor : _ExpressibleByColorLiteral {
+  @nonobjc public required convenience init(colorLiteralRed red: Float,
+                                            green: Float,
+                                            blue: Float, alpha: Float) {
     self.init(red: CGFloat(red), green: CGFloat(green),
               blue: CGFloat(blue), alpha: CGFloat(alpha))
   }
@@ -211,12 +222,12 @@ extension UIColor : _ColorLiteralConvertible {
 
 public typealias _ColorLiteralType = UIColor
 
-extension UIImage : _ImageLiteralConvertible {
+extension UIImage : _ExpressibleByImageLiteral {
   private convenience init!(failableImageLiteral name: String) {
     self.init(named: name)
   }
 
-  public required convenience init(imageLiteral name: String) {
+  public required convenience init(imageLiteralResourceName name: String) {
     self.init(failableImageLiteral: name)
   }
 }

@@ -35,10 +35,12 @@ using namespace Lowering;
 SILGenFunction::SILGenFunction(SILGenModule &SGM, SILFunction &F)
   : SGM(SGM), F(F),
     B(*this, createBasicBlock()),
+    OpenedArchetypesTracker(F),
     CurrentSILLoc(F.getLocation()),
     Cleanups(*this)
 {
   B.setCurrentDebugScope(F.getDebugScope());
+  B.setOpenedArchetypesTracker(&OpenedArchetypesTracker);
 }
 
 /// SILGenFunction destructor - called after the entire function's AST has been
@@ -207,27 +209,11 @@ SILGenFunction::emitSiblingMethodRef(SILLocation loc,
                          methodTy, subs);
 }
 
-ManagedValue SILGenFunction::emitFunctionRef(SILLocation loc,
-                                             SILDeclRef constant,
-                                             SILConstantInfo constantInfo) {
-  // If the function has captures, apply them.
-  if (auto fn = constant.getAnyFunctionRef()) {
-    if (fn->getCaptureInfo().hasLocalCaptures() ||
-        fn->getCaptureInfo().hasGenericParamCaptures()) {
-      return emitClosureValue(loc, constant, *fn);
-    }
-  }
-
-  // Otherwise, use a global FunctionRefInst.
-  SILValue c = emitGlobalFunctionRef(loc, constant, constantInfo);
-  return ManagedValue::forUnmanaged(c);
-}
-
 void SILGenFunction::emitCaptures(SILLocation loc,
-                                  AnyFunctionRef TheClosure,
+                                  AnyFunctionRef closure,
                                   CaptureEmission purpose,
                                   SmallVectorImpl<ManagedValue> &capturedArgs) {
-  auto captureInfo = SGM.Types.getLoweredLocalCaptures(TheClosure);
+  auto captureInfo = SGM.Types.getLoweredLocalCaptures(closure);
   // For boxed captures, we need to mark the contained variables as having
   // escaped for DI diagnostics.
   SmallVector<SILValue, 2> escapesToMark;
@@ -248,6 +234,28 @@ void SILGenFunction::emitCaptures(SILLocation loc,
     canGuarantee = false;
   
   for (auto capture : captureInfo.getCaptures()) {
+    if (capture.isDynamicSelfMetadata()) {
+      // The parameter type is the static Self type, but the value we
+      // want to pass is the dynamic Self type, so upcast it.
+      auto dynamicSelfMetatype = MetatypeType::get(
+          captureInfo.getDynamicSelfType(),
+          MetatypeRepresentation::Thick)
+              ->getCanonicalType();
+      auto staticSelfMetatype = MetatypeType::get(
+          captureInfo.getDynamicSelfType()->getSelfType(),
+          MetatypeRepresentation::Thick)
+              ->getCanonicalType();
+      SILType dynamicSILType = SILType::getPrimitiveObjectType(
+          dynamicSelfMetatype);
+      SILType staticSILType = SILType::getPrimitiveObjectType(
+          staticSelfMetatype);
+
+      SILValue value = B.createMetatype(loc, dynamicSILType);
+      value = B.createUpcast(loc, value, staticSILType);
+      capturedArgs.push_back(ManagedValue::forUnmanaged(value));
+      continue;
+    }
+
     auto *vd = capture.getDecl();
 
     switch (SGM.Types.getDeclCaptureKind(capture)) {
@@ -313,7 +321,7 @@ void SILGenFunction::emitCaptures(SILLocation loc,
         if (canGuarantee) {
           capturedArgs.push_back(ManagedValue::forUnmanaged(vl.box));
         } else {
-          B.createStrongRetain(loc, vl.box);
+          B.createStrongRetain(loc, vl.box, Atomicity::Atomic);
           capturedArgs.push_back(emitManagedRValueWithCleanup(vl.box));
         }
         escapesToMark.push_back(vl.value);
@@ -349,36 +357,56 @@ void SILGenFunction::emitCaptures(SILLocation loc,
 
 ManagedValue
 SILGenFunction::emitClosureValue(SILLocation loc, SILDeclRef constant,
-                                 AnyFunctionRef TheClosure) {
+                                 CanType expectedType,
+                                 ArrayRef<Substitution> subs) {
+  auto closure = *constant.getAnyFunctionRef();
+  auto captureInfo = closure.getCaptureInfo();
+  auto loweredCaptureInfo = SGM.Types.getLoweredLocalCaptures(closure);
+
   assert(((constant.uncurryLevel == 1 &&
-           TheClosure.getCaptureInfo().hasLocalCaptures()) ||
+           captureInfo.hasLocalCaptures()) ||
           (constant.uncurryLevel == 0 &&
-           !TheClosure.getCaptureInfo().hasLocalCaptures())) &&
+           !captureInfo.hasLocalCaptures())) &&
          "curried local functions not yet supported");
 
   auto constantInfo = getConstantInfo(constant);
   SILValue functionRef = emitGlobalFunctionRef(loc, constant, constantInfo);
   SILType functionTy = functionRef->getType();
 
-  auto expectedType =
-    cast<FunctionType>(TheClosure.getType()->getCanonicalType());
-
-  // Forward substitutions from the outer scope.
-
+  // Apply substitutions.
   auto pft = constantInfo.SILFnType;
 
-  auto forwardSubs = constantInfo.getForwardingSubstitutions(getASTContext());
+  auto *dc = closure.getAsDeclContext()->getParent();
+  if (dc->isLocalContext() && !loweredCaptureInfo.hasGenericParamCaptures()) {
+    // If the lowered function type is not polymorphic but we were given
+    // substitutions, we have a closure in a generic context which does not
+    // capture generic parameters. Just drop the substitutions.
+    subs = { };
+  } else if (closure.getAbstractClosureExpr()) {
+    // If we have a closure expression in generic context, Sema won't give
+    // us substitutions, so we just use the forwarding substitutions from
+    // context.
+    subs = getForwardingSubstitutions();
+  }
 
   bool wasSpecialized = false;
-  if (pft->isPolymorphic() && !forwardSubs.empty()) {
+  if (!subs.empty()) {
     auto specialized = pft->substGenericArgs(F.getModule(),
                                              F.getModule().getSwiftModule(),
-                                             forwardSubs);
+                                             subs);
     functionTy = SILType::getPrimitiveObjectType(specialized);
     wasSpecialized = true;
   }
 
-  if (!TheClosure.getCaptureInfo().hasLocalCaptures() && !wasSpecialized) {
+  // If we're in top-level code, we don't need to physically capture script
+  // globals, but we still need to mark them as escaping so that DI can flag
+  // uninitialized uses.
+  if (this == SGM.TopLevelSGF) {
+    SGM.emitMarkFunctionEscapeForTopLevelCodeGlobals(
+        loc, captureInfo);
+  }
+
+  if (!captureInfo.hasLocalCaptures() && !wasSpecialized) {
     auto result = ManagedValue::forUnmanaged(functionRef);
     return emitOrigToSubstValue(loc, result,
                                 AbstractionPattern(expectedType),
@@ -386,7 +414,7 @@ SILGenFunction::emitClosureValue(SILLocation loc, SILDeclRef constant,
   }
 
   SmallVector<ManagedValue, 4> capturedArgs;
-  emitCaptures(loc, TheClosure, CaptureEmission::PartialApplication,
+  emitCaptures(loc, closure, CaptureEmission::PartialApplication,
                capturedArgs);
 
   // The partial application takes ownership of the context parameters.
@@ -397,15 +425,42 @@ SILGenFunction::emitClosureValue(SILLocation loc, SILDeclRef constant,
   SILType closureTy =
     SILGenBuilder::getPartialApplyResultType(functionRef->getType(),
                                              capturedArgs.size(), SGM.M,
-                                             forwardSubs);
+                                             subs);
   auto toClosure =
     B.createPartialApply(loc, functionRef, functionTy,
-                         forwardSubs, forwardedArgs, closureTy);
+                         subs, forwardedArgs, closureTy);
   auto result = emitManagedRValueWithCleanup(toClosure);
 
-  return emitOrigToSubstValue(loc, result,
-                              AbstractionPattern(expectedType),
-                              expectedType);
+  // Get the lowered AST types:
+  //  - the original type
+  auto origLoweredFormalType =
+      AbstractionPattern(constantInfo.LoweredInterfaceType);
+  if (captureInfo.hasLocalCaptures()) {
+    // Get the unlowered formal type of the constant, stripping off
+    // the first level of function application, which applies captures.
+    origLoweredFormalType =
+      AbstractionPattern(constantInfo.FormalInterfaceType)
+          .getFunctionResultType();
+
+    // Lower it, being careful to use the right generic signature.
+    origLoweredFormalType =
+      AbstractionPattern(
+          origLoweredFormalType.getGenericSignature(),
+          SGM.Types.getLoweredASTFunctionType(
+              cast<FunctionType>(origLoweredFormalType.getType()),
+              0, constant));
+  }
+
+  // - the substituted type
+  auto substFormalType = cast<FunctionType>(expectedType);
+  auto substLoweredFormalType =
+    SGM.Types.getLoweredASTFunctionType(substFormalType, 0, constant);
+
+  // Generalize if necessary.
+  result = emitOrigToSubstValue(loc, result, origLoweredFormalType,
+                                substLoweredFormalType);
+
+  return result;
 }
 
 void SILGenFunction::emitFunction(FuncDecl *fd) {
@@ -413,7 +468,7 @@ void SILGenFunction::emitFunction(FuncDecl *fd) {
 
   Type resultTy = fd->getResultType();
   emitProlog(fd, fd->getParameterLists(), resultTy);
-  prepareEpilog(resultTy, fd->isBodyThrowing(), CleanupLocation(fd));
+  prepareEpilog(resultTy, fd->hasThrows(), CleanupLocation(fd));
 
   emitProfilerIncrement(fd->getBody());
   emitStmt(fd->getBody());
@@ -457,12 +512,34 @@ void SILGenFunction::emitArtificialTopLevel(ClassDecl *mainClass) {
     CanType IUOptNSStringTy
       = ImplicitlyUnwrappedOptionalType::get(NSStringTy)->getCanonicalType();
 
+    // Look up UIApplicationMain.
+    // FIXME: Doing an AST lookup here is gross and not entirely sound;
+    // we're getting away with it because the types are guaranteed to already
+    // be imported.
+    ASTContext &ctx = getASTContext();
+    Module *UIKit = ctx.getLoadedModule(ctx.getIdentifier("UIKit"));
+    SmallVector<ValueDecl *, 1> results;
+    UIKit->lookupQualified(UIKit->getDeclaredType(),
+                           ctx.getIdentifier("UIApplicationMain"),
+                           NL_QualifiedDefault,
+                           /*resolver*/nullptr,
+                           results);
+    assert(!results.empty() && "couldn't find UIApplicationMain in UIKit");
+    assert(results.size() == 1 && "more than one UIApplicationMain?");
+
+    SILDeclRef mainRef{results.front(), ResilienceExpansion::Minimal,
+                       SILDeclRef::ConstructAtNaturalUncurryLevel,
+                       /*isForeign*/true};
+    auto UIApplicationMainFn = SGM.M.getOrCreateFunction(mainClass, mainRef,
+                                                         NotForDefinition);
+    auto fnTy = UIApplicationMainFn->getLoweredFunctionType();
+
     // Get the class name as a string using NSStringFromClass.
     CanType mainClassTy = mainClass->getDeclaredTypeInContext()->getCanonicalType();
     CanType mainClassMetaty = CanMetatypeType::get(mainClassTy,
                                                    MetatypeRepresentation::ObjC);
     ProtocolDecl *anyObjectProtocol =
-      getASTContext().getProtocol(KnownProtocolKind::AnyObject);
+      ctx.getProtocol(KnownProtocolKind::AnyObject);
     auto mainClassAnyObjectConformance = ProtocolConformanceRef(
       *SGM.M.getSwiftModule()->lookupConformance(mainClassTy, anyObjectProtocol,
                                                 nullptr));
@@ -482,7 +559,7 @@ void SILGenFunction::emitArtificialTopLevel(ClassDecl *mainClass) {
                   SILResultInfo(OptNSStringTy,
                                 ResultConvention::Autoreleased),
                   /*error result*/ None,
-                  getASTContext());
+                  ctx);
     auto NSStringFromClassFn
       = SGM.M.getOrCreateFunction(mainClass, "NSStringFromClass",
                                   SILLinkage::PublicExternal,
@@ -493,58 +570,73 @@ void SILGenFunction::emitArtificialTopLevel(ClassDecl *mainClass) {
                              SILType::getPrimitiveObjectType(mainClassMetaty));
     metaTy = B.createInitExistentialMetatype(mainClass, metaTy,
                           SILType::getPrimitiveObjectType(anyObjectMetaTy),
-                          getASTContext().AllocateCopy(
+                          ctx.AllocateCopy(
                             llvm::makeArrayRef(mainClassAnyObjectConformance)));
     SILValue optName = B.createApply(mainClass,
                                NSStringFromClass,
                                NSStringFromClass->getType(),
                                SILType::getPrimitiveObjectType(OptNSStringTy),
                                {}, metaTy);
-    SILValue iuoptName = B.createUncheckedBitCast(mainClass, optName,
-                              SILType::getPrimitiveObjectType(IUOptNSStringTy));
 
-    // Call UIApplicationMain.
-    SILParameterInfo argTypes[] = {
-      SILParameterInfo(argc->getType().getSwiftRValueType(),
-                       ParameterConvention::Direct_Unowned),
-      SILParameterInfo(argv->getType().getSwiftRValueType(),
-                       ParameterConvention::Direct_Unowned),
-      SILParameterInfo(IUOptNSStringTy, ParameterConvention::Direct_Unowned),
-      SILParameterInfo(IUOptNSStringTy, ParameterConvention::Direct_Unowned),
-    };
-    auto UIApplicationMainType = SILFunctionType::get(nullptr,
-                  SILFunctionType::ExtInfo()
-                    .withRepresentation(SILFunctionType::Representation::
-                                        CFunctionPointer),
-                  ParameterConvention::Direct_Unowned,
-                  argTypes,
-                  SILResultInfo(argc->getType().getSwiftRValueType(),
-                                ResultConvention::Unowned),
-                  /*error result*/ None,
-                  getASTContext());
+    // Fix up the string parameters to have the right type.
+    SILType nameArgTy = fnTy->getSILArgumentType(3);
+    assert(nameArgTy == fnTy->getSILArgumentType(2));
+    auto managedName = ManagedValue::forUnmanaged(optName);
+    SILValue nilValue;
+    if (optName->getType() == nameArgTy) {
+      nilValue = getOptionalNoneValue(mainClass,
+                                      getTypeLowering(OptNSStringTy));
+    } else {
+      assert(nameArgTy.getSwiftRValueType() == IUOptNSStringTy);
+      nilValue = getOptionalNoneValue(mainClass,
+                                      getTypeLowering(IUOptNSStringTy));
+      managedName = emitOptionalToOptional(
+          mainClass, managedName,
+          SILType::getPrimitiveObjectType(IUOptNSStringTy),
+          [](SILGenFunction &, SILLocation, ManagedValue input, SILType) {
+        return input;
+      });
+    }
 
-    auto UIApplicationMainFn
-      = SGM.M.getOrCreateFunction(mainClass, "UIApplicationMain",
-                                  SILLinkage::PublicExternal,
-                                  UIApplicationMainType,
-                                  IsBare, IsTransparent, IsNotFragile);
+    // Fix up argv to have the right type.
+    auto argvTy = fnTy->getSILArgumentType(1);
+
+    SILType unwrappedTy = argvTy;
+    if (Type innerTy = argvTy.getSwiftRValueType()->getAnyOptionalObjectType()){
+      auto canInnerTy = innerTy->getCanonicalType();
+      unwrappedTy = SILType::getPrimitiveObjectType(canInnerTy);
+    }
+
+    auto managedArgv = ManagedValue::forUnmanaged(argv);
+
+    if (unwrappedTy != argv->getType()) {
+      auto converted =
+          emitPointerToPointer(mainClass, managedArgv,
+                               argv->getType().getSwiftRValueType(),
+                               unwrappedTy.getSwiftRValueType());
+      managedArgv = std::move(converted).getAsSingleValue(*this, mainClass);
+    }
+
+    if (unwrappedTy != argvTy) {
+      managedArgv = getOptionalSomeValue(mainClass, managedArgv,
+                                         getTypeLowering(argvTy));
+    }
 
     auto UIApplicationMain = B.createFunctionRef(mainClass, UIApplicationMainFn);
-    auto nil = B.createEnum(mainClass, SILValue(),
-                      getASTContext().getImplicitlyUnwrappedOptionalNoneDecl(),
-                      SILType::getPrimitiveObjectType(IUOptNSStringTy));
 
-    SILValue args[] = { argc, argv, nil, iuoptName };
+    SILValue args[] = {argc, managedArgv.getValue(), nilValue,
+                       managedName.getValue()};
 
     B.createApply(mainClass, UIApplicationMain,
                   UIApplicationMain->getType(),
                   argc->getType(), {}, args);
     SILValue r = B.createIntegerLiteral(mainClass,
-                        SILType::getBuiltinIntegerType(32, getASTContext()), 0);
+                        SILType::getBuiltinIntegerType(32, ctx), 0);
     auto rType = F.getLoweredFunctionType()->getSingleResult().getSILType();
     if (r->getType() != rType)
       r = B.createStruct(mainClass, rType, r);
 
+    Cleanups.emitCleanupsForReturn(mainClass);
     B.createReturn(mainClass, r);
     return;
   }
@@ -789,12 +881,11 @@ MetatypeInst *SILGenBuilder::createMetatype(SILLocation loc, SILType metatype) {
   case MetatypeRepresentation::Thick:
   case MetatypeRepresentation::ObjC: {
     // Walk the type recursively to look for substitutions we may need.
-    SmallVector<Substitution, 2> subsBuf;
     theMetatype.getInstanceType().findIf([&](Type t) -> bool {
       if (!t->getAnyNominal())
         return false;
 
-      auto subs = t->gatherAllSubstitutions(SGM.SwiftModule, subsBuf, nullptr);
+      auto subs = t->gatherAllSubstitutions(SGM.SwiftModule, nullptr);
       SGM.useConformancesFromSubstitutions(subs);
       return false;
     });
@@ -898,19 +989,4 @@ SILGenBuilder::createAllocExistentialBox(SILLocation Loc,
   return SILBuilder::createAllocExistentialBox(Loc, ExistentialType,
                                                ConcreteType,
                                                Conformances);
-}
-
-void SILGenFunction::checkForImportedUsedConformances(Type type) {
-  // Recognize _BridgedNSError, which must pull in its witness table for
-  // dynamic casts to work
-  if (auto bridgedNSErrorProtocol =
-          getASTContext().getProtocol(KnownProtocolKind::BridgedNSError)) {
-    if (auto nominalDecl = type->getAnyNominal()) {
-      SmallVector<ProtocolConformance *, 4> conformances;
-      if (nominalDecl->lookupConformance(
-              SGM.SwiftModule, bridgedNSErrorProtocol, conformances)) {
-        SGM.useConformance(ProtocolConformanceRef(conformances.front()));
-      }
-    }
-  }
 }

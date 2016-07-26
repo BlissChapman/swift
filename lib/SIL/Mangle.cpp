@@ -56,10 +56,21 @@ static void mangleSubstitution(Mangler &M, Substitution Sub) {
 void GenericSpecializationMangler::mangleSpecialization() {
   Mangler &M = getMangler();
 
-  for (auto &Sub : Subs) {
-    mangleSubstitution(M, Sub);
-    M.append('_');
+  SILFunctionType *FTy = Function->getLoweredFunctionType();
+  CanGenericSignature Sig = FTy->getGenericSignature();
+
+  unsigned idx = 0;
+  for (Type DepType : Sig->getAllDependentTypes()) {
+    // It is sufficient to only mangle the substitutions of the "primary"
+    // dependent types. As all other dependent types are just derived from the
+    // primary types, this will give us unique symbol names.
+    if (DepType->is<GenericTypeParamType>()) {
+      mangleSubstitution(M, Subs[idx]);
+      M.append('_');
+    }
+    ++idx;
   }
+  assert(idx == Subs.size() && "subs not parallel to dependent types");
 }
 
 //===----------------------------------------------------------------------===//
@@ -68,8 +79,8 @@ void GenericSpecializationMangler::mangleSpecialization() {
 
 FunctionSignatureSpecializationMangler::
 FunctionSignatureSpecializationMangler(SpecializationPass P, Mangler &M,
-                                       SILFunction *F)
-  : SpecializationMangler(SpecializationKind::FunctionSignature, P, M, F) {
+                                       IsFragile_t Fragile, SILFunction *F)
+  : SpecializationMangler(SpecializationKind::FunctionSignature, P, M, Fragile, F) {
   for (unsigned i = 0, e = F->getLoweredFunctionType()->getNumSILArguments();
        i != e; ++i) {
     (void)i;
@@ -81,7 +92,7 @@ FunctionSignatureSpecializationMangler(SpecializationPass P, Mangler &M,
 void
 FunctionSignatureSpecializationMangler::
 setArgumentDead(unsigned ArgNo) {
-  Args[ArgNo].first = ArgumentModifierIntBase(ArgumentModifier::Dead);
+  Args[ArgNo].first |= ArgumentModifierIntBase(ArgumentModifier::Dead);
 }
 
 void

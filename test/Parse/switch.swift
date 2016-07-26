@@ -64,7 +64,7 @@ case _ where x % 2 == 0,
   x = 1
 case var y where y % 2 == 0:
   x = y + 1
-case _ where 0: // expected-error {{type 'Int' does not conform to protocol 'Boolean'}}
+case _ where 0: // expected-error {{'Int' is not convertible to 'Bool'}}
   x = 0
 default:
   x = 1
@@ -273,7 +273,7 @@ func enumElementSyntaxOnTuple() {
 
 // sr-176
 enum Whatever { case Thing }
-func f0(values: [Whatever]) {
+func f0(values: [Whatever]) { // expected-note {{did you mean 'values'?}}
     switch value { // expected-error {{use of unresolved identifier 'value'}}
     case .Thing: // Ok. Don't emit diagnostics about enum case not found in type <<error type>>.
         break

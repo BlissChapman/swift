@@ -11,9 +11,9 @@
 //===----------------------------------------------------------------------===//
 // -*- swift -*-
 // RUN: rm -rf %t ; mkdir -p %t
-// RUN: %S/../../utils/gyb -DCMAKE_SIZEOF_VOID_P=%target-ptrsize %s -o %t/NumericParsing.swift
-// RUN: %S/../../utils/line-directive %t/NumericParsing.swift -- %target-build-swift %t/NumericParsing.swift -o %t/a.out
-// RUN: %S/../../utils/line-directive %t/NumericParsing.swift -- %target-run %t/a.out
+// RUN: %gyb -DCMAKE_SIZEOF_VOID_P=%target-ptrsize %s -o %t/NumericParsing.swift
+// RUN: %line-directive %t/NumericParsing.swift -- %target-build-swift %t/NumericParsing.swift -o %t/a.out
+// RUN: %line-directive %t/NumericParsing.swift -- %target-run %t/a.out
 // REQUIRES: executable_test
 %{
 from SwiftIntTypes import all_integer_types
@@ -49,13 +49,6 @@ number_of_values = 23
 
 import StdlibUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-import SwiftPrivate
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 var tests = TestSuite("NumericParsing")
 
@@ -153,7 +146,7 @@ tests.test("${Self}/Basics") {
   // Check that we can round-trip the string representation of 2^100,
   // which requires an exponent to express...
   let large =
-    repeatElement(1024 as ${Self}, count: 10).reduce(1, combine: *)
+    repeatElement(1024 as ${Self}, count: 10).reduce(1, *)
   let largeText = String(large)
   expectEqual(largeText, String(${Self}(largeText)!))
   

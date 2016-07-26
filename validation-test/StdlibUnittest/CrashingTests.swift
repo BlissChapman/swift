@@ -3,19 +3,12 @@
 
 import StdlibUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-import SwiftPrivate
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 _setOverrideOSVersion(.osx(major: 10, minor: 9, bugFix: 3))
 _setTestSuiteFailedCallback() { print("abort()") }
 
 //
-// Test that harness aborts when a test crashes
+// Test that harness aborts when a test crashes during a test run.
 //
 
 var TestSuiteCrashes = TestSuite("TestSuiteCrashes")

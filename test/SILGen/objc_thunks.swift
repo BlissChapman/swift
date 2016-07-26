@@ -6,7 +6,7 @@ import gizmo
 import ansible
 
 class Hoozit : Gizmo {
-  func typical(x: Int, y: Gizmo) -> Gizmo { return y }
+  func typical(_ x: Int, y: Gizmo) -> Gizmo { return y }
   // CHECK-LABEL: sil hidden [thunk] @_TToFC11objc_thunks6Hoozit7typical{{.*}} : $@convention(objc_method) (Int, Gizmo, Hoozit) -> @autoreleased Gizmo {
   // CHECK: bb0([[X:%.*]] : $Int, [[Y:%.*]] : $Gizmo, [[THIS:%.*]] : $Hoozit):
   // CHECK-NEXT:   retain [[Y]]
@@ -30,11 +30,11 @@ class Hoozit : Gizmo {
   // CHECK-NEXT: }
 
   // NS_CONSUMED 'gizmo' argument by inheritance
-  override class func consume(gizmo: Gizmo?) { }
+  override class func consume(_ gizmo: Gizmo?) { }
    // CHECK-LABEL: sil hidden [thunk] @_TToZFC11objc_thunks6Hoozit7consume{{.*}} : $@convention(objc_method) (@owned Optional<Gizmo>, @objc_metatype Hoozit.Type) -> () {
   // CHECK: bb0([[GIZMO:%.*]] : $Optional<Gizmo>, [[THIS:%.*]] : $@objc_metatype Hoozit.Type):
   // CHECK-NEXT: [[THICK_THIS:%[0-9]+]] = objc_to_thick_metatype [[THIS]] : $@objc_metatype Hoozit.Type to $@thick Hoozit.Type
-  // CHECK:   [[NATIVE:%.*]] = function_ref @_TZFC11objc_thunks6Hoozit7consume{{.*}} : $@convention(thin) (@owned Optional<Gizmo>, @thick Hoozit.Type) -> ()
+  // CHECK:   [[NATIVE:%.*]] = function_ref @_TZFC11objc_thunks6Hoozit7consume{{.*}} : $@convention(method) (@owned Optional<Gizmo>, @thick Hoozit.Type) -> ()
   // CHECK-NEXT:   apply [[NATIVE]]([[GIZMO]], [[THICK_THIS]])
   // CHECK-NEXT:   return
   // CHECK-NEXT: }
@@ -48,6 +48,19 @@ class Hoozit : Gizmo {
   // CHECK-NEXT:   [[NATIVE:%.*]] = function_ref @_TFC11objc_thunks6Hoozit7copyFoo{{.*}} : $@convention(method) (@guaranteed Hoozit) -> @owned Gizmo
   // CHECK-NEXT:   [[RES:%.*]] = apply [[NATIVE]]([[THIS]])
   // CHECK:        release [[THIS]]
+  // CHECK-NEXT:   return [[RES]]
+  // CHECK-NEXT: }
+
+  // Override the normal family conventions to make this non-consuming and
+  // returning at +0.
+  func initFoo() -> Gizmo { return self }
+  // CHECK-LABEL: sil hidden [thunk] @_TToFC11objc_thunks6Hoozit7initFoo{{.*}} : $@convention(objc_method) (Hoozit) -> @autoreleased Gizmo
+  // CHECK: bb0([[THIS:%.*]] : $Hoozit):
+  // CHECK-NEXT:   retain [[THIS]]
+  // CHECK-NEXT:   // function_ref
+  // CHECK-NEXT:   [[NATIVE:%.*]] = function_ref @_TFC11objc_thunks6Hoozit7initFoo{{.*}} : $@convention(method) (@guaranteed Hoozit) -> @owned Gizmo
+  // CHECK-NEXT:   [[RES:%.*]] = apply [[NATIVE]]([[THIS]])
+  // CHECK-NEXT:   release [[THIS]]
   // CHECK-NEXT:   return [[RES]]
   // CHECK-NEXT: }
 
@@ -188,8 +201,59 @@ class Hoozit : Gizmo {
   // CHECK-NEXT:   return
   // CHECK-NEXT: }
 
+  var initProperty: Gizmo
+  // -- getter
+  // CHECK-LABEL: sil hidden [transparent] [thunk] @_TToFC11objc_thunks6Hoozitg12initPropertyCSo5Gizmo : $@convention(objc_method) (Hoozit) -> @autoreleased Gizmo {
+  // CHECK: bb0([[THIS:%.*]] : $Hoozit):
+  // CHECK-NEXT:   retain [[THIS]]
+  // CHECK-NEXT:   // function_ref
+  // CHECK-NEXT:   [[NATIVE:%.*]] = function_ref @_TFC11objc_thunks6Hoozitg12initPropertyCSo5Gizmo : $@convention(method) (@guaranteed Hoozit) -> @owned Gizmo
+  // CHECK-NEXT:   [[RES:%.*]] = apply [[NATIVE]]([[THIS]])
+  // CHECK-NEXT:   release [[THIS]]
+  // CHECK-NEXT:   return [[RES]]
+  // CHECK-NEXT: }
+
+  // -- setter
+  // CHECK-LABEL: sil hidden [transparent] [thunk] @_TToFC11objc_thunks6Hoozits12initPropertyCSo5Gizmo : $@convention(objc_method) (Gizmo, Hoozit) -> () {
+  // CHECK: bb0([[VALUE:%.*]] : $Gizmo, [[THIS:%.*]] : $Hoozit):
+  // CHECK-NEXT:   retain [[VALUE]]
+  // CHECK-NEXT:   retain [[THIS]]
+  // CHECK-NEXT:   // function_ref
+  // CHECK-NEXT:   [[NATIVE:%.*]] = function_ref @_TFC11objc_thunks6Hoozits12initPropertyCSo5Gizmo : $@convention(method) (@owned Gizmo, @guaranteed Hoozit) -> ()
+  // CHECK-NEXT:   apply [[NATIVE]]([[VALUE]], [[THIS]])
+  // CHECK-NEXT:   release [[THIS]]
+  // CHECK-NEXT:   return
+  // CHECK-NEXT: }
+
+  var propComputed: Gizmo {
+    @objc(initPropComputedGetter) get { return self }
+    @objc(initPropComputedSetter:) set {}
+  }
+  // -- getter
+  // CHECK-LABEL: sil hidden [thunk] @_TToFC11objc_thunks6Hoozitg12propComputedCSo5Gizmo : $@convention(objc_method) (Hoozit) -> @autoreleased Gizmo {
+  // CHECK: bb0([[THIS:%.*]] : $Hoozit):
+  // CHECK-NEXT:   retain [[THIS]]
+  // CHECK-NEXT:   // function_ref
+  // CHECK-NEXT:   [[NATIVE:%.*]] = function_ref @_TFC11objc_thunks6Hoozitg12propComputedCSo5Gizmo : $@convention(method) (@guaranteed Hoozit) -> @owned Gizmo
+  // CHECK-NEXT:   [[RES:%.*]] = apply [[NATIVE]]([[THIS]])
+  // CHECK-NEXT:   release [[THIS]]
+  // CHECK-NEXT:   return [[RES]]
+  // CHECK-NEXT: }
+
+  // -- setter
+  // CHECK-LABEL: sil hidden [thunk] @_TToFC11objc_thunks6Hoozits12propComputedCSo5Gizmo : $@convention(objc_method) (Gizmo, Hoozit) -> () {
+  // CHECK: bb0([[VALUE:%.*]] : $Gizmo, [[THIS:%.*]] : $Hoozit):
+  // CHECK-NEXT:   retain [[VALUE]]
+  // CHECK-NEXT:   retain [[THIS]]
+  // CHECK-NEXT:   // function_ref
+  // CHECK-NEXT:   [[NATIVE:%.*]] = function_ref @_TFC11objc_thunks6Hoozits12propComputedCSo5Gizmo : $@convention(method) (@owned Gizmo, @guaranteed Hoozit) -> ()
+  // CHECK-NEXT:   apply [[NATIVE]]([[VALUE]], [[THIS]])
+  // CHECK-NEXT:   release [[THIS]]
+  // CHECK-NEXT:   return
+  // CHECK-NEXT: }
+
   // Don't export generics to ObjC yet
-  func generic<T>(x: T) {}
+  func generic<T>(_ x: T) {}
   // CHECK-NOT: sil hidden [thunk] @_TToFC11objc_thunks6Hoozit7generic{{.*}}
 
   // Constructor.
@@ -198,10 +262,9 @@ class Hoozit : Gizmo {
   // CHECK: [[PB:%.*]] = project_box [[SELF_BOX]]
   // CHECK: [[SELFMUI:%[0-9]+]] = mark_uninitialized [derivedself] [[PB]]
   // CHECK: [[GIZMO:%[0-9]+]] = upcast [[SELF:%[0-9]+]] : $Hoozit to $Gizmo
-  // CHECK: [[SUPERMETHOD:%[0-9]+]] = super_method [volatile] [[SELF]] : $Hoozit, #Gizmo.init!initializer.1.foreign : Gizmo.Type -> (bellsOn: Int) -> Gizmo! , $@convention(objc_method) (Int, @owned Gizmo) -> @owned ImplicitlyUnwrappedOptional<Gizmo>
+  // CHECK: [[SUPERMETHOD:%[0-9]+]] = super_method [volatile] [[SELF]] : $Hoozit, #Gizmo.init!initializer.1.foreign : (Gizmo.Type) -> (bellsOn: Int) -> Gizmo! , $@convention(objc_method) (Int, @owned Gizmo) -> @owned ImplicitlyUnwrappedOptional<Gizmo>
   // CHECK-NEXT: [[SELF_REPLACED:%[0-9]+]] = apply [[SUPERMETHOD]](%0, [[X:%[0-9]+]]) : $@convention(objc_method) (Int, @owned Gizmo) -> @owned ImplicitlyUnwrappedOptional<Gizmo>
   // CHECK-NOT: unconditional_checked_cast downcast [[SELF_REPLACED]] : $Gizmo to $Hoozit
-  // CHECK: function_ref @_TFs45_stdlib_ImplicitlyUnwrappedOptional_unwrappedurFGSQx_x
   // CHECK: unchecked_ref_cast
   // CHECK: return
   override init(bellsOn x : Int) {
@@ -248,7 +311,7 @@ class Wotsit<T> : Gizmo {
   // CHECK-NEXT: }
   func plain() { }
 
-  func generic<U>(x: U) {}
+  func generic<U>(_ x: U) {}
 
   var property : T
 
@@ -276,6 +339,10 @@ class Wotsit<T> : Gizmo {
 
   // Ivar destroyer
   // CHECK: sil hidden @_TToF{{.*}}WotsitE
+
+  // CHECK-LABEL: sil hidden [thunk] @_TToFC11objc_thunks6WotsitcfT_GSQGS0_x__ : $@convention(objc_method) <T> (@owned Wotsit<T>) -> @owned ImplicitlyUnwrappedOptional<Wotsit<T>>
+
+  // CHECK-LABEL: sil hidden [thunk] @_TToFC11objc_thunks6WotsitcfT7bellsOnSi_GSQGS0_x__ : $@convention(objc_method) <T> (Int, @owned Wotsit<T>) -> @owned ImplicitlyUnwrappedOptional<Wotsit<T>>
 }
 
 // CHECK-NOT: sil hidden [thunk] @_TToF{{.*}}Wotsit{{.*}}
@@ -292,7 +359,7 @@ extension Hoozit {
     // CHECK: [[SELFMUI:%[0-9]+]] = mark_uninitialized [delegatingself] [[PB]]
     // CHECK: [[X_BOX:%[0-9]+]] = alloc_box $X
     var x = X()
-    // CHECK: [[CTOR:%[0-9]+]] = class_method [volatile] [[SELF:%[0-9]+]] : $Hoozit, #Hoozit.init!initializer.1.foreign : Hoozit.Type -> (int: Int) -> Hoozit , $@convention(objc_method) (Int, @owned Hoozit) -> @owned Hoozit
+    // CHECK: [[CTOR:%[0-9]+]] = class_method [volatile] [[SELF:%[0-9]+]] : $Hoozit, #Hoozit.init!initializer.1.foreign : (Hoozit.Type) -> (int: Int) -> Hoozit , $@convention(objc_method) (Int, @owned Hoozit) -> @owned Hoozit
     // CHECK: [[NEW_SELF:%[0-9]+]] = apply [[CTOR]]
     // CHECK: store [[NEW_SELF]] to [[SELFMUI]] : $*Hoozit
     // CHECK: [[NONNULL:%[0-9]+]] = is_nonnull [[NEW_SELF]] : $Hoozit
@@ -322,7 +389,7 @@ extension Hoozit {
 }
 
 // Calling objc methods of subclass should go through native entry points
-func useHoozit(h: Hoozit) {
+func useHoozit(_ h: Hoozit) {
 // sil @_TF11objc_thunks9useHoozitFT1hC11objc_thunks6Hoozit_T_
   // In the class decl, gets dynamically dispatched
   h.fork()
@@ -333,7 +400,7 @@ func useHoozit(h: Hoozit) {
   // CHECK: class_method [volatile] {{%.*}} : {{.*}}, #Hoozit.foof!1.foreign
 }
 
-func useWotsit(w: Wotsit<String>) {
+func useWotsit(_ w: Wotsit<String>) {
 // sil @_TF11objc_thunks9useWotsitFT1wGCSo6WotsitSS__T_
   w.plain()
   // CHECK: class_method {{%.*}} : {{.*}}, #Wotsit.plain!1 :
@@ -350,13 +417,13 @@ func other() { }
 class X { }
 
 // CHECK-LABEL: sil hidden @_TF11objc_thunks8property
-func property(g: Gizmo) -> Int {
+func property(_ g: Gizmo) -> Int {
   // CHECK: class_method [volatile] %0 : $Gizmo, #Gizmo.count!getter.1.foreign
   return g.count
 }
 
 // CHECK-LABEL: sil hidden @_TF11objc_thunks13blockProperty
-func blockProperty(g: Gizmo) {
+func blockProperty(_ g: Gizmo) {
   // CHECK: class_method [volatile] %0 : $Gizmo, #Gizmo.block!setter.1.foreign
   g.block = { }
   // CHECK: class_method [volatile] %0 : $Gizmo, #Gizmo.block!getter.1.foreign
@@ -369,7 +436,7 @@ class DesignatedStubs : Gizmo {
   override init() { i = 5 }
 
   // CHECK-LABEL: sil hidden @_TFC11objc_thunks15DesignatedStubsc{{.*}}
-  // CHECK: function_ref @_TFs26_unimplemented_initializer
+  // CHECK: function_ref @_TFs25_unimplementedInitializer
   // CHECK: string_literal utf8 "objc_thunks.DesignatedStubs"
   // CHECK: string_literal utf8 "init(bellsOn:)"
   // CHECK: string_literal utf8 "{{.*}}objc_thunks.swift"
@@ -384,26 +451,26 @@ class DesignatedOverrides : Gizmo {
   // CHECK-LABEL: sil hidden @_TFC11objc_thunks19DesignatedOverridesc{{.*}}
   // CHECK-NOT: return
   // CHECK: function_ref @_TFSiC{{.*}}
-  // CHECK: super_method [volatile] [[SELF:%[0-9]+]] : $DesignatedOverrides, #Gizmo.init!initializer.1.foreign : Gizmo.Type -> () -> Gizmo! , $@convention(objc_method) (@owned Gizmo) -> @owned ImplicitlyUnwrappedOptional<Gizmo>
+  // CHECK: super_method [volatile] [[SELF:%[0-9]+]] : $DesignatedOverrides, #Gizmo.init!initializer.1.foreign : (Gizmo.Type) -> () -> Gizmo! , $@convention(objc_method) (@owned Gizmo) -> @owned ImplicitlyUnwrappedOptional<Gizmo>
   // CHECK: return
 
   // CHECK-LABEL: sil hidden @_TFC11objc_thunks19DesignatedOverridesc{{.*}}
   // CHECK: function_ref @_TFSiC{{.*}}
-  // CHECK: super_method [volatile] [[SELF:%[0-9]+]] : $DesignatedOverrides, #Gizmo.init!initializer.1.foreign : Gizmo.Type -> (bellsOn: Int) -> Gizmo! , $@convention(objc_method) (Int, @owned Gizmo) -> @owned ImplicitlyUnwrappedOptional<Gizmo>
+  // CHECK: super_method [volatile] [[SELF:%[0-9]+]] : $DesignatedOverrides, #Gizmo.init!initializer.1.foreign : (Gizmo.Type) -> (bellsOn: Int) -> Gizmo! , $@convention(objc_method) (Int, @owned Gizmo) -> @owned ImplicitlyUnwrappedOptional<Gizmo>
   // CHECK: return
 }
 
 // Make sure we copy blocks passed in as IUOs - <rdar://problem/22471309>
 
 func registerAnsible() {
-  // CHECK: function_ref @_TFF11objc_thunks15registerAnsibleFT_T_U_FGSQFT_T__T_
-  // CHECK: function_ref @_TTRXFo_oGSQFT_T____XFdCb_dGSQbT_T____
-  Ansible.anseAsync({ completion in completion() })
+  // CHECK: function_ref @_TFF11objc_thunks15registerAnsibleFT_T_U_FGSqFT_T__T_
+  // CHECK: function_ref @_TTRXFo_oGSqFT_T____XFdCb_dGSqbT_T____
+  Ansible.anseAsync({ completion in completion!() })
 }
 
 // FIXME: would be nice if we didn't need to re-abstract as much here.
 
-// CHECK-LABEL: sil shared [transparent] [reabstraction_thunk] @_TTRXFo_oGSQFT_T____XFdCb_dGSQbT_T____ : $@convention(c) (@inout_aliasable @block_storage @callee_owned (@owned ImplicitlyUnwrappedOptional<() -> ()>) -> (), ImplicitlyUnwrappedOptional<@convention(block) () -> ()>) -> ()
+// CHECK-LABEL: sil shared [transparent] [reabstraction_thunk] @_TTRXFo_oGSqFT_T____XFdCb_dGSqbT_T____ : $@convention(c) @pseudogeneric (@inout_aliasable @block_storage @callee_owned (@owned Optional<() -> ()>) -> (), Optional<@convention(block) () -> ()>) -> ()
 // CHECK: [[HEAP_BLOCK_IUO:%.*]] = copy_block %1
 // CHECK: select_enum [[HEAP_BLOCK_IUO]]
 // CHECK: bb1:
@@ -412,4 +479,4 @@ func registerAnsible() {
 // CHECK: [[BRIDGED_BLOCK:%.*]] = partial_apply [[BLOCK_THUNK]]([[HEAP_BLOCK]])
 // CHECK: [[REABS_THUNK:%.*]] = function_ref @_TTRXFo___XFo_iT__iT__
 // CHECK: [[REABS_BLOCK:%.*]] = partial_apply [[REABS_THUNK]]([[BRIDGED_BLOCK]])
-// CHECK: [[REABS_BLOCK_IUO:%.*]] = enum $ImplicitlyUnwrappedOptional<() -> ()>, {{.*}} [[REABS_BLOCK]]
+// CHECK: [[REABS_BLOCK_IUO:%.*]] = enum $Optional<() -> ()>, {{.*}} [[REABS_BLOCK]]

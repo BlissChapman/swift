@@ -10,20 +10,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: rm -rf %t && mkdir -p %t && %S/../../utils/gyb %s -o %t/Join.swift
-// RUN: %S/../../utils/line-directive %t/Join.swift -- %target-build-swift %t/Join.swift -o %t/a.out
-// RUN: %S/../../utils/line-directive %t/Join.swift -- %target-run %t/a.out
+// RUN: %target-run-simple-swiftgyb
 // REQUIRES: executable_test
 
 import StdlibUnittest
 import StdlibCollectionUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 public struct JoinWithSeparatorTest {
   public let elements: [[Int]]
@@ -259,17 +251,26 @@ public let joinWithSeparatorTests = [
 
 var JoinTestSuite = TestSuite("Join")
 
-% from itertools import product
-% traversals = [ 'Forward', 'Bidirectional', 'RandomAccess' ]
-% base_kinds = [ 'Defaulted', 'Minimal' ]
-% collections = [
-%   ('{}{}RangeReplaceableCollection'.format(base_kind, traversal), traversal)
-%     for base_kind, traversal in product(base_kinds, traversals)
-% ]
-% other_array_types = [ 'Array', 'ArraySlice', 'ContiguousArray' ]
-% collections += [(array, 'RandomAccess') for array in other_array_types]
+%{
 
-% for Base, traversal in collections:
+from gyb_stdlib_support import (
+    TRAVERSALS,
+    sliceTypeName
+)
+
+from itertools import product
+
+base_kinds = [ 'Defaulted', 'Minimal' ]
+collections = [
+  (base_kind + sliceTypeName(traversal=traversal, mutable=False, rangeReplaceable=True).replace('Slice', 'Collection'), traversal)
+    for base_kind, traversal in product(base_kinds, TRAVERSALS)
+]
+other_array_types = [ 'Array', 'ArraySlice', 'ContiguousArray' ]
+collections += [(array, 'RandomAccess') for array in other_array_types]
+
+}%
+
+% for Base, TRAVERSALS in collections:
 %   if Base not in other_array_types:
 %     label = 'elements:'
 %   else:
@@ -287,7 +288,7 @@ JoinTestSuite.test("${Base}.join()") {
   }
 }
 
-JoinTestSuite.test("${Base}.join()/_copyToNativeArrayBuffer()") {
+JoinTestSuite.test("${Base}.join()/_copyToContiguousArray()") {
   for test in joinWithSeparatorTests {
     let elements = ${Base}(${label} test.elements.map {
       ${Base}(${label} $0)
@@ -300,7 +301,7 @@ JoinTestSuite.test("${Base}.join()/_copyToNativeArrayBuffer()") {
 
 % end
 
-func join(separator: String, _ elements: [String]) -> String {
+func join(_ separator: String, _ elements: [String]) -> String {
   return elements.joined(separator: separator)
 }
 

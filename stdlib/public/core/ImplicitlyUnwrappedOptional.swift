@@ -11,18 +11,29 @@
 //===----------------------------------------------------------------------===//
 
 /// An optional type that allows implicit member access.
-public enum ImplicitlyUnwrappedOptional<Wrapped> : NilLiteralConvertible {
+///
+/// *Deprecated.*
+@_fixed_layout
+public enum ImplicitlyUnwrappedOptional<Wrapped> : ExpressibleByNilLiteral {
   // The compiler has special knowledge of the existence of
   // `ImplicitlyUnwrappedOptional<Wrapped>`, but always interacts with it using
   // the library intrinsics below.
   
+  /// The absence of a value. Typically written using the nil literal, `nil`.
   case none
+
+  /// The presence of a value, stored as `Wrapped`.
   case some(Wrapped)
 
-  /// Construct a non-`nil` instance that stores `some`.
+  /// Creates an instance that stores the given value.
   public init(_ some: Wrapped) { self = .some(some) }
 
-  /// Create an instance initialized with `nil`.
+  /// Creates an instance initialized with `nil`.
+  ///
+  /// Do not call this initializer directly. It is used by the compiler when
+  /// you initialize an `Optional` instance with a `nil` literal. For example:
+  ///
+  ///     let i: Index! = nil
   @_transparent
   public init(nilLiteral: ()) {
     self = .none
@@ -30,7 +41,7 @@ public enum ImplicitlyUnwrappedOptional<Wrapped> : NilLiteralConvertible {
 }
 
 extension ImplicitlyUnwrappedOptional : CustomStringConvertible {
-  /// A textual representation of `self`.
+  /// A textual representation of the value, or `nil`.
   public var description: String {
     switch self {
     case .some(let value):
@@ -52,30 +63,6 @@ extension ImplicitlyUnwrappedOptional : CustomDebugStringConvertible {
   }
 }
 
-@_transparent
-@warn_unused_result
-public // COMPILER_INTRINSIC
-func _stdlib_ImplicitlyUnwrappedOptional_isSome<Wrapped>
-  (`self`: Wrapped!) -> Bool {
-
-  return `self` != nil
-}
-
-@_transparent
-@warn_unused_result
-public // COMPILER_INTRINSIC
-func _stdlib_ImplicitlyUnwrappedOptional_unwrapped<Wrapped>
-  (`self`: Wrapped!) -> Wrapped {
-
-  switch `self` {
-  case .some(let wrapped):
-    return wrapped
-  case .none:
-    _preconditionFailure(
-      "unexpectedly found nil while unwrapping an Optional value")
-  }
-}
-
 #if _runtime(_ObjC)
 extension ImplicitlyUnwrappedOptional : _ObjectiveCBridgeable {
   public func _bridgeToObjectiveC() -> AnyObject {
@@ -89,15 +76,15 @@ extension ImplicitlyUnwrappedOptional : _ObjectiveCBridgeable {
   }
 
   public static func _forceBridgeFromObjectiveC(
-    x: AnyObject,
-    result: inout Wrapped!?
+    _ x: AnyObject,
+    result: inout ImplicitlyUnwrappedOptional<Wrapped>?
   ) {
     result = Swift._forceBridgeFromObjectiveC(x, Wrapped.self)
   }
 
   public static func _conditionallyBridgeFromObjectiveC(
-    x: AnyObject,
-    result: inout Wrapped!?
+    _ x: AnyObject,
+    result: inout ImplicitlyUnwrappedOptional<Wrapped>?
   ) -> Bool {
     let bridged: Wrapped? =
       Swift._conditionallyBridgeFromObjectiveC(x, Wrapped.self)
@@ -111,26 +98,33 @@ extension ImplicitlyUnwrappedOptional : _ObjectiveCBridgeable {
   public static func _isBridgedToObjectiveC() -> Bool {
     return Swift._isBridgedToObjectiveC(Wrapped.self)
   }
+
+  public static func _unconditionallyBridgeFromObjectiveC(_ source: AnyObject?)
+      -> Wrapped! {
+    var result: ImplicitlyUnwrappedOptional<Wrapped>?
+    _forceBridgeFromObjectiveC(source!, result: &result)
+    return result!
+  }
 }
 #endif
 
 extension ImplicitlyUnwrappedOptional {
   @available(*, unavailable, message: "Please use nil literal instead.")
   public init() {
-    fatalError("unavailable function can't be called")
+    Builtin.unreachable()
   }
 
   @available(*, unavailable, message: "Has been removed in Swift 3.")
   public func map<U>(
-    @noescape f: (Wrapped) throws -> U
+    _ f: @noescape (Wrapped) throws -> U
   ) rethrows -> ImplicitlyUnwrappedOptional<U> {
-    fatalError("unavailable function can't be called")
+    Builtin.unreachable()
   }
 
   @available(*, unavailable, message: "Has been removed in Swift 3.")
   public func flatMap<U>(
-      @noescape f: (Wrapped) throws -> ImplicitlyUnwrappedOptional<U>
+      _ f: @noescape (Wrapped) throws -> ImplicitlyUnwrappedOptional<U>
   ) rethrows -> ImplicitlyUnwrappedOptional<U> {
-    fatalError("unavailable function can't be called")
+    Builtin.unreachable()
   }
 }

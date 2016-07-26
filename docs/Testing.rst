@@ -33,6 +33,20 @@ The LLVM lit-based testsuite
 
 * Buildbots run all tests, on all supported platforms.
 
+Testsuite subsets
+-----------------
+
+The testsuite is split into three subsets:
+
+* Primary testsuite, located under ``swift/test``.
+
+* Validation testsuite, located under ``swift/validation-test``.
+
+* Long tests, which are marked with ``REQUIRES: long_test``.
+
+  Unlike other tests, every long test should also include either
+  ``REQUIRES: nonexecutable_test`` or ``REQUIRES: executable_test``.
+
 Running the LLVM lit-based testsuite
 ------------------------------------
 
@@ -59,13 +73,21 @@ Besides ``check-swift``, other targets are also available. Here's the full list:
 
   Runs tests from the ``${SWIFT_SOURCE_ROOT}/test`` directory.
 
-* ``check-swift-validation``
+* ``check-swift-only_validation``
 
   Runs tests from the ``${SWIFT_SOURCE_ROOT}/validation-test`` directory.
 
+* ``check-swift-validation``
+
+  Runs the primary and validation tests, without the long tests.
+
+* ``check-swift-only_long``
+
+  Runs long tests only.
+
 * ``check-swift-all``
 
-  Runs all tests.
+  Runs all tests (primary, validation, and long).
 
 For every target above, there are variants for different optimizations:
 
@@ -171,7 +193,7 @@ Substitutions that start with ``%target`` configure the compiler for building
 code for the target that is not the build machine:
 
 * ``%target-parse-verify-swift``: parse and type check the current Swift file
-  for the target platform and verify diagnostics, like ``swift -parse -verify
+  for the target platform and verify diagnostics, like ``swift -frontend -parse -verify
   %s``.
 
   Use this substitution for testing semantic analysis in the compiler.
@@ -267,6 +289,10 @@ code for the target that is not the build machine:
 * ``%target-sdk-name``: only for Apple platforms: ``xcrun``-style SDK name
   (``macosx``, ``iphoneos``, ``iphonesimulator``).
 
+* ``%target-static-stdlib-path``: the path to the static standard library.
+
+  Add ``REQUIRES: static_stdlib`` to the test.
+
 Always use ``%target-*`` substitutions unless you have a good reason.  For
 example, an exception would be a test that checks how the compiler handles
 mixing module files for incompatible platforms (that test would need to compile
@@ -354,10 +380,12 @@ use this pattern::
   // RUN: %target-swift-frontend ... | FileCheck --check-prefix=CHECK --check-prefix=CHECK-%target-cpu %s
 
   // CHECK: common line
-  // CHECK-i386:   only for i386
-  // CHECK-x86_64: only for x86_64
-  // CHECK-armv7:  only for armv7
-  // CHECK-arm64:  only for arm64
+  // CHECK-i386:        only for i386
+  // CHECK-x86_64:      only for x86_64
+  // CHECK-armv7:       only for armv7
+  // CHECK-arm64:       only for arm64
+  // CHECK-powerpc64:   only for powerpc64
+  // CHECK-powerpc64le: only for powerpc64le
 
 Features for ``REQUIRES`` and ``XFAIL``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

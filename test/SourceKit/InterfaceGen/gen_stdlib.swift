@@ -1,7 +1,7 @@
 
 var x: Int
 
-// RUN: %sourcekitd-test -req=interface-gen -module Swift -check-interface-ascii > %t.response
+// RUN: %sourcekitd-test -req=interface-gen -module Swift > %t.response
 // RUN: FileCheck -check-prefix=CHECK-STDLIB -input-file %t.response %s
 // RUN: FileCheck -check-prefix=CHECK-MUTATING-ATTR -input-file %t.response %s
 // RUN: FileCheck -check-prefix=CHECK-HIDE-ATTR -input-file %t.response %s
@@ -33,6 +33,7 @@ var x: Int
 // CHECK1-NEXT: Int
 // CHECK1-NEXT: s:Si
 // CHECK1-NEXT: Int.Type
+// CHECK1-NEXT: _Tt
 // CHECK1-NEXT: Swift{{$}}
 // CHECK1-NEXT: <Group>Math/Integers</Group>
 // CHECK1-NEXT: /<interface-gen>{{$}}
@@ -46,11 +47,33 @@ var x: Int
 
 // RUN: %sourcekitd-test -req=interface-gen -module Swift -group-name Bool > %t.Bool.response
 // RUN: FileCheck -check-prefix=CHECK-BOOL -input-file %t.Bool.response %s
-// CHECK-BOOL-DAG: extension Bool : Boolean {
-// CHECK-BOOL-DAG: extension Bool : BooleanLiteralConvertible {
+// CHECK-BOOL-DAG: extension Bool : ExpressibleByBooleanLiteral {
 
 // These are not in the bool group:
 // CHECK-BOOL-NOT: Zip2Iterator
 // CHECK-BOOL-NOT: Zip2Sequence
 // CHECK-BOOL-NOT: struct Int
+// CHECK-BOOL-NOT: struct Float
 // CHECK-BOOL-NOT: extension String
+
+// RUN: %sourcekitd-test -req=interface-gen -module Swift -interested-usr s:Sb > %t.Bool.response
+// RUN: FileCheck -check-prefix=CHECK-BOOL -input-file %t.Bool.response %s
+
+// RUN: %sourcekitd-test -req=interface-gen -module Swift -interested-usr s:Si > %t.Int.response
+// RUN: FileCheck -check-prefix=CHECK-INT -input-file %t.Int.response %s
+
+// CHECK-INT: struct Int
+// CHECK-INT: extension Int
+// CHECK-INT-NOT: Zip2Iterator
+// CHECK-INT-NOT: Zip2Sequence
+// CHECK-INT-NOT: struct Bool
+// CHECK-INT-NOT: struct Float
+
+// RUN: %sourcekitd-test -req=interface-gen -module Swift -interested-usr s:Sf > %t.Float.response
+// RUN: FileCheck -check-prefix=CHECK-FLOAT -input-file %t.Float.response %s
+
+// CHECK-FLOAT: struct Float
+// CHECK-FLOAT-NOT: Zip2Iterator
+// CHECK-FLOAT-NOT: Zip2Sequence
+// CHECK-FLOAT-NOT: struct Bool
+// CHECK-FLOAT-NOT: struct Int

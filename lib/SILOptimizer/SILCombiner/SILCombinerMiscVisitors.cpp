@@ -37,11 +37,11 @@ SILCombiner::visitAllocExistentialBoxInst(AllocExistentialBoxInst *AEBI) {
   // Optimize away the pattern below that happens when exceptions are created
   // and in some cases, due to inlining, are not needed.
   //
-  //   %6 = alloc_existential_box $ErrorProtocol, $ColorError
+  //   %6 = alloc_existential_box $Error, $ColorError
   //   %7 = enum $VendingMachineError, #ColorError.Red
   //   store %7 to %6#1 : $*ColorError
-  //   debug_value %6#0 : $ErrorProtocol
-  //   strong_release %6#0 : $ErrorProtocol
+  //   debug_value %6#0 : $Error
+  //   strong_release %6#0 : $Error
 
   StoreInst *SingleStore = nullptr;
   StrongReleaseInst *SingleRelease = nullptr;
@@ -84,7 +84,8 @@ SILCombiner::visitAllocExistentialBoxInst(AllocExistentialBoxInst *AEBI) {
     // Release the value that was stored into the existential box. The box
     // is going away so we need to release the stored value now.
     Builder.setInsertionPoint(SingleStore);
-    Builder.createReleaseValue(AEBI->getLoc(), SingleStore->getSrc());
+    Builder.createReleaseValue(AEBI->getLoc(), SingleStore->getSrc(),
+                               Atomicity::Atomic);
 
     // Erase the instruction that stores into the box and the release that
     // releases the box, and finally, release the box.
@@ -309,7 +310,12 @@ SILInstruction *SILCombiner::visitAllocStackInst(AllocStackInst *AS) {
   // If the only users of the alloc_stack are alloc, destroy and
   // init_existential_addr then we can promote the allocation of the init
   // existential.
-  if (IEI && !OEI) {
+  // Be careful with open archetypes, because they cannot be moved before
+  // their definitions.
+  if (IEI && !OEI &&
+      !IEI->getLoweredConcreteType()
+           .getSwiftRValueType()
+           ->isOpenedExistential()) {
     auto *ConcAlloc = Builder.createAllocStack(
         AS->getLoc(), IEI->getLoweredConcreteType(), AS->getVarInfo());
     IEI->replaceAllUsesWith(ConcAlloc);
@@ -456,17 +462,20 @@ SILInstruction *SILCombiner::visitReleaseValueInst(ReleaseValueInst *RVI) {
     // retain_value of an enum_inst where we know that it has a payload can be
     // reduced to a retain_value on the payload.
     if (EI->hasOperand()) {
-      return Builder.createReleaseValue(RVI->getLoc(), EI->getOperand());
+      return Builder.createReleaseValue(RVI->getLoc(), EI->getOperand(),
+                                        Atomicity::Atomic);
     }
   }
 
   // ReleaseValueInst of an unowned type is an unowned_release.
   if (OperandTy.is<UnownedStorageType>())
-    return Builder.createUnownedRelease(RVI->getLoc(), Operand);
+    return Builder.createUnownedRelease(RVI->getLoc(), Operand,
+                                        Atomicity::Atomic);
 
   // ReleaseValueInst of a reference type is a strong_release.
   if (OperandTy.isReferenceCounted(RVI->getModule()))
-    return Builder.createStrongRelease(RVI->getLoc(), Operand);
+    return Builder.createStrongRelease(RVI->getLoc(), Operand,
+                                       Atomicity::Atomic);
 
   // ReleaseValueInst of a trivial type is a no-op.
   if (OperandTy.isTrivial(RVI->getModule()))
@@ -491,17 +500,20 @@ SILInstruction *SILCombiner::visitRetainValueInst(RetainValueInst *RVI) {
     // retain_value of an enum_inst where we know that it has a payload can be
     // reduced to a retain_value on the payload.
     if (EI->hasOperand()) {
-      return Builder.createRetainValue(RVI->getLoc(), EI->getOperand());
+      return Builder.createRetainValue(RVI->getLoc(), EI->getOperand(),
+                                       Atomicity::Atomic);
     }
   }
 
   // RetainValueInst of an unowned type is an unowned_retain.
   if (OperandTy.is<UnownedStorageType>())
-    return Builder.createUnownedRetain(RVI->getLoc(), Operand);
+    return Builder.createUnownedRetain(RVI->getLoc(), Operand,
+                                       Atomicity::Atomic);
 
   // RetainValueInst of a reference type is a strong_release.
   if (OperandTy.isReferenceCounted(RVI->getModule())) {
-    return Builder.createStrongRetain(RVI->getLoc(), Operand);
+    return Builder.createStrongRetain(RVI->getLoc(), Operand,
+                                      Atomicity::Atomic);
   }
 
   // RetainValueInst of a trivial type is a no-op + use propagation.
@@ -1161,4 +1173,3 @@ SILInstruction *SILCombiner::visitWitnessMethodInst(WitnessMethodInst *WMI) {
   }
   return nullptr;
 }
-

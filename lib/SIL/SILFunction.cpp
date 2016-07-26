@@ -89,7 +89,6 @@ SILFunction::SILFunction(SILModule &Module, SILLinkage Linkage,
     LoweredType(LoweredType),
     // FIXME: Context params should be independent of the function type.
     ContextGenericParams(contextGenericParams),
-    Location(Loc),
     DeclCtx(DC),
     DebugScope(DebugScope),
     Bare(isBareSILFunction),
@@ -101,7 +100,6 @@ SILFunction::SILFunction(SILModule &Module, SILLinkage Linkage,
     InlineStrategy(inlineStrategy),
     Linkage(unsigned(Linkage)),
     KeepAsPublic(false),
-    ForeignBody(false),
     EffectsKindAttr(E) {
   if (InsertBefore)
     Module.functions.insert(SILModule::iterator(InsertBefore), this);
@@ -158,6 +156,11 @@ void SILFunction::setDeclContext(Decl *D) {
 
 void SILFunction::setDeclContext(Expr *E) {
   DeclCtx = dyn_cast_or_null<AbstractClosureExpr>(E);
+}
+
+bool SILFunction::hasForeignBody() const {
+  if (!hasClangNode()) return false;
+  return SILDeclRef::isClangGenerated(getClangNode());
 }
 
 void SILFunction::numberValues(llvm::DenseMap<const ValueBase*,
@@ -289,6 +292,11 @@ Type SILFunction::mapTypeOutOfContext(Type type) const {
   return ArchetypeBuilder::mapTypeOutOfContext(getModule().getSwiftModule(),
                                                getContextGenericParams(),
                                                type);
+}
+
+bool SILFunction::isNoReturnFunction() const {
+  return SILType::getPrimitiveObjectType(getLoweredFunctionType())
+      .isNoReturnFunction();
 }
 
 SILBasicBlock *SILFunction::createBasicBlock() {
@@ -510,9 +518,25 @@ bool SILFunction::hasName(const char *Name) const {
   return getName() == Name;
 }
 
-  /// Helper method which returns true if the linkage of the SILFunction
-  /// indicates that the objects definition might be required outside the
-  /// current SILModule.
+/// Returns true if this function can be referenced from a fragile function
+/// body.
+bool SILFunction::hasValidLinkageForFragileRef() const {
+  // Fragile functions can reference 'static inline' functions imported
+  // from C.
+  if (hasForeignBody())
+    return true;
+
+  // If we can inline it, we can reference it.
+  if (hasValidLinkageForFragileInline())
+    return true;
+
+  // Otherwise, only public functions can be referenced.
+  return hasPublicVisibility(getLinkage());
+}
+
+/// Helper method which returns true if the linkage of the SILFunction
+/// indicates that the objects definition might be required outside the
+/// current SILModule.
 bool
 SILFunction::isPossiblyUsedExternally() const {
   return swift::isPossiblyUsedExternally(getLinkage(),

@@ -168,8 +168,8 @@ public:
       selfType = conformance->getType();
     } else {
       auto *proto = cast<ProtocolDecl>(requirement->getDeclContext());
-      selfInterfaceType = proto->getProtocolSelf()->getDeclaredType();
-      selfType = proto->getProtocolSelf()->getArchetype();
+      selfInterfaceType = proto->getSelfInterfaceType();
+      selfType = proto->getSelfTypeInContext();
     }
 
     MaterializeForSetEmitter emitter(SGM, linkage, witness, witnessSubs,
@@ -205,16 +205,9 @@ public:
   forConcreteImplementation(SILGenModule &SGM,
                             FuncDecl *witness,
                             ArrayRef<Substitution> witnessSubs) {
-    Type selfInterfaceType, selfType;
-
     auto *dc = witness->getDeclContext();
-    if (auto *proto = dc->getAsProtocolOrProtocolExtensionContext()) {
-      selfInterfaceType = proto->getProtocolSelf()->getDeclaredType();
-      selfType = ArchetypeBuilder::mapTypeIntoContext(dc, selfInterfaceType);
-    } else {
-      selfInterfaceType = dc->getDeclaredInterfaceType();
-      selfType = dc->getDeclaredTypeInContext();
-    }
+    Type selfInterfaceType = dc->getSelfInterfaceType();
+    Type selfType = dc->getSelfTypeInContext();
 
     SILDeclRef constant(witness);
     auto constantInfo = SGM.Types.getConstantInfo(constant);
@@ -363,6 +356,7 @@ public:
         lv.getSubstFormalType()).getObjectType();
     SILType actualTy = lv.getTypeOfRValue().getObjectType();
     assert(expectedTy == actualTy);
+    (void) expectedTy;
 
     // Reabstract back to the requirement pattern.
     if (actualTy != RequirementStorageType) {
@@ -436,6 +430,9 @@ void MaterializeForSetEmitter::emit(SILGenFunction &gen) {
   SILValue address;
   SILFunction *callbackFn = nullptr;
   switch (strategy) {
+  case AccessStrategy::BehaviorStorage:
+    llvm_unreachable("materializeForSet should never engage in behavior init");
+  
   case AccessStrategy::Storage:
     address = emitUsingStorage(gen, loc, self, std::move(indicesRV));
     break;
@@ -667,11 +664,11 @@ MaterializeForSetEmitter::createAddressorCallback(SILFunction &F,
 
     case AddressorKind::Owning:
     case AddressorKind::NativeOwning:
-      gen.B.createStrongRelease(loc, owner);
+      gen.B.createStrongRelease(loc, owner, Atomicity::Atomic);
       break;
 
     case AddressorKind::NativePinning:
-      gen.B.createStrongUnpin(loc, owner);
+      gen.B.createStrongUnpin(loc, owner, Atomicity::Atomic);
       break;
     }
 
@@ -711,7 +708,8 @@ MaterializeForSetEmitter::emitUsingGetterSetter(SILGenFunction &gen,
   // Set up the result buffer.
   resultBuffer =
     gen.B.createPointerToAddress(loc, resultBuffer,
-                                 RequirementStorageType.getAddressType());
+                                 RequirementStorageType.getAddressType(),
+                                 /*isStrict*/ true);
   TemporaryInitialization init(resultBuffer, CleanupHandle::invalid());
 
   // Evaluate the getter into the result buffer.
@@ -786,8 +784,8 @@ MaterializeForSetEmitter::createSetterCallback(SILFunction &F,
 
     // The callback gets the value at +1.
     auto &valueTL = gen.getTypeLowering(lvalue.getTypeOfRValue());
-    value = gen.B.createPointerToAddress(loc, value,
-                                   valueTL.getLoweredType().getAddressType());
+    value = gen.B.createPointerToAddress(
+      loc, value, valueTL.getLoweredType().getAddressType(), /*isStrict*/ true);
     if (valueTL.isLoadable())
       value = gen.B.createLoad(loc, value);
     ManagedValue mValue = gen.emitManagedRValueWithCleanup(value, valueTL);

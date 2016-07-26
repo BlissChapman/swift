@@ -14,6 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#if defined(_WIN32) || defined(__CYGWIN__)
 #include "Private.h"
 #include "swift/Runtime/Debug.h"
 #include <stdint.h>
@@ -21,6 +22,9 @@
 #include <string.h>
 #include <mutex>
 #include <vector>
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #include <psapi.h>
 
@@ -91,7 +95,9 @@ uint8_t *swift::_swift_getSectionDataPE(void *handle, const char *sectionName,
   // This is relying on undocumented feature of Windows API LoadLibrary().
   unsigned char *peStart = (unsigned char *)handle;
 
-  int ntHeadersOffset = peStart[0x3C];
+  const int kLocationOfNtHeaderOffset = 0x3C;
+  int ntHeadersOffset =
+      *reinterpret_cast<int32_t *>(peStart + kLocationOfNtHeaderOffset);
 
   bool assert1 =
       peStart[ntHeadersOffset] == 'P' && peStart[ntHeadersOffset + 1] == 'E';
@@ -132,6 +138,7 @@ uint8_t *swift::_swift_getSectionDataPE(void *handle, const char *sectionName,
   return nullptr;
 }
 
+#if !defined(_MSC_VER)
 void swift::_swift_once_f(uintptr_t *predicate, void *context,
                           void (*function)(void *)) {
   // FIXME: This implementation does a global lock, which is much worse than
@@ -146,3 +153,5 @@ void swift::_swift_once_f(uintptr_t *predicate, void *context,
   } else
     swiftOnceMutex.unlock();
 }
+#endif
+#endif

@@ -10,23 +10,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// Customizes the result of `_reflect(x)`, where `x` is a conforming
-/// type.
-public protocol _Reflectable {
-  // The runtime has inappropriate knowledge of this protocol and how its
-  // witness tables are laid out. Changing this protocol requires a
-  // corresponding change to Reflection.cpp.
-
-  /// Returns a mirror that reflects `self`.
-  @warn_unused_result
-  func _getMirror() -> _Mirror
-}
-
 /// A unique identifier for a class instance or metatype.
 ///
 /// In Swift, only class instances and metatypes have unique identities. There
 /// is no notion of identity for structs, enums, functions, or tuples.
-public struct ObjectIdentifier : Hashable, Comparable {
+public struct ObjectIdentifier : Hashable {
   internal let _value: Builtin.RawPointer
 
   // FIXME: Better hashing algorithm
@@ -52,27 +40,34 @@ public struct ObjectIdentifier : Hashable, Comparable {
   }
 }
 
-@warn_unused_result
-public func <(lhs: ObjectIdentifier, rhs: ObjectIdentifier) -> Bool {
-  return UInt(lhs) < UInt(rhs)
+extension ObjectIdentifier : CustomDebugStringConvertible {
+  /// A textual representation of `self`, suitable for debugging.
+  public var debugDescription: String {
+    return "ObjectIdentifier(\(_rawPointerToString(_value)))"
+  }
 }
 
-@warn_unused_result
-public func ==(x: ObjectIdentifier, y: ObjectIdentifier) -> Bool {
-  return Bool(Builtin.cmp_eq_RawPointer(x._value, y._value))
+extension ObjectIdentifier : Comparable {
+  public static func < (lhs: ObjectIdentifier, rhs: ObjectIdentifier) -> Bool {
+    return UInt(bitPattern: lhs) < UInt(bitPattern: rhs)
+  }
+
+  public static func == (x: ObjectIdentifier, y: ObjectIdentifier) -> Bool {
+    return Bool(Builtin.cmp_eq_RawPointer(x._value, y._value))
+  }
 }
 
 extension UInt {
   /// Create a `UInt` that captures the full value of `objectID`.
-  public init(_ objectID: ObjectIdentifier) {
+  public init(bitPattern objectID: ObjectIdentifier) {
     self.init(Builtin.ptrtoint_Word(objectID._value))
   }
 }
 
 extension Int {
   /// Create an `Int` that captures the full value of `objectID`.
-  public init(_ objectID: ObjectIdentifier) {
-    self.init(bitPattern: UInt(objectID))
+  public init(bitPattern objectID: ObjectIdentifier) {
+    self.init(bitPattern: UInt(bitPattern: objectID))
   }
 }
 
@@ -134,24 +129,21 @@ public protocol _Mirror {
 /// An entry point that can be called from C++ code to get the summary string
 /// for an arbitrary object. The memory pointed to by "out" is initialized with
 /// the summary string.
-@warn_unused_result
 @_silgen_name("swift_getSummary")
 public // COMPILER_INTRINSIC
-func _getSummary<T>(out: UnsafeMutablePointer<String>, x: T) {
-  out.initialize(with: String(reflecting: x))
+func _getSummary<T>(_ out: UnsafeMutablePointer<String>, x: T) {
+  out.initialize(to: String(reflecting: x))
 }
 
-/// Produce a mirror for any value. If the value's type conforms to
-/// `_Reflectable`, invoke its `_getMirror()` method; otherwise, fall back
-/// to an implementation in the runtime that structurally reflects values
-/// of any type.
-@warn_unused_result
+/// Produce a mirror for any value.  The runtime produces a mirror that
+/// structurally reflects values of any type.
 @_silgen_name("swift_reflectAny")
-public func _reflect<T>(x: T) -> _Mirror
+internal func _reflect<T>(_ x: T) -> _Mirror
 
 /// Dump an object's contents using its mirror to the specified output stream.
-public func dump<T, TargetStream : OutputStream>(
-  value: T,
+@discardableResult
+public func dump<T, TargetStream : TextOutputStream>(
+  _ value: T,
   to target: inout TargetStream,
   name: String? = nil,
   indent: Int = 0,
@@ -174,8 +166,9 @@ public func dump<T, TargetStream : OutputStream>(
 }
 
 /// Dump an object's contents using its mirror to standard output.
+@discardableResult
 public func dump<T>(
-  value: T,
+  _ value: T,
   name: String? = nil,
   indent: Int = 0,
   maxDepth: Int = .max,
@@ -192,8 +185,8 @@ public func dump<T>(
 }
 
 /// Dump an object's contents. User code should use dump().
-internal func _dump_unlocked<TargetStream : OutputStream>(
-  value: Any,
+internal func _dump_unlocked<TargetStream : TextOutputStream>(
+  _ value: Any,
   to target: inout TargetStream,
   name: String?,
   indent: Int,
@@ -221,7 +214,8 @@ internal func _dump_unlocked<TargetStream : OutputStream>(
   _dumpPrint_unlocked(value, mirror, &target)
 
   let id: ObjectIdentifier?
-  if let classInstance = value as? AnyObject where value.dynamicType is AnyObject.Type {
+  if let classInstance = value as? AnyObject,
+     value.dynamicType is AnyObject.Type {
     // Object is a class (but not an ObjC-bridged struct)
     id = ObjectIdentifier(classInstance)
   } else if let metatypeInstance = value as? Any.Type {
@@ -276,7 +270,7 @@ internal func _dump_unlocked<TargetStream : OutputStream>(
     }
 
     let (name, child) = mirror.children[currentIndex]
-    currentIndex = currentIndex.successor()
+    mirror.children.formIndex(after: &currentIndex)
     _dump_unlocked(
       child,
       to: &target,
@@ -290,8 +284,8 @@ internal func _dump_unlocked<TargetStream : OutputStream>(
 
 /// Dump information about an object's superclass, given a mirror reflecting
 /// that superclass.
-internal func _dumpSuperclass_unlocked<TargetStream : OutputStream>(
-  mirror mirror: Mirror,
+internal func _dumpSuperclass_unlocked<TargetStream : TextOutputStream>(
+  mirror: Mirror,
   to target: inout TargetStream,
   indent: Int,
   maxDepth: Int,
@@ -342,7 +336,7 @@ internal func _dumpSuperclass_unlocked<TargetStream : OutputStream>(
     }
 
     let (name, child) = mirror.children[currentIndex]
-    currentIndex = currentIndex.successor()
+    mirror.children.formIndex(after: &currentIndex)
     _dump_unlocked(
       child,
       to: &target,
@@ -358,9 +352,10 @@ internal func _dumpSuperclass_unlocked<TargetStream : OutputStream>(
 
 @_silgen_name("swift_MagicMirrorData_summary")
 func _swift_MagicMirrorData_summaryImpl(
-  metadata: Any.Type, _ result: UnsafeMutablePointer<String>
+  _ metadata: Any.Type, _ result: UnsafeMutablePointer<String>
 )
 
+@_fixed_layout
 public struct _MagicMirrorData {
   let owner: Builtin.NativeObject
   let ptr: Builtin.RawPointer
@@ -407,6 +402,20 @@ struct _OpaqueMirror : _Mirror {
   var disposition: _MirrorDisposition { return .aggregate }
 }
 
+@_silgen_name("swift_TupleMirror_count")
+func _getTupleCount(_: _MagicMirrorData) -> Int
+
+// Like the other swift_*Mirror_subscript functions declared here and
+// elsewhere, this is implemented in the runtime.  The Swift CC would
+// normally require the String to be returned directly and the _Mirror
+// indirectly.  However, Clang isn't currently capable of doing that
+// reliably because the size of String exceeds the normal direct-return
+// ABI rules on most platforms.  Therefore, we make this function generic,
+// which has the disadvantage of passing the String type metadata as an
+// extra argument, but does force the string to be returned indirectly.
+@_silgen_name("swift_TupleMirror_subscript")
+func _getTupleChild<T>(_: Int, _: _MagicMirrorData) -> (T, _Mirror)
+
 internal struct _TupleMirror : _Mirror {
   let data: _MagicMirrorData
 
@@ -414,18 +423,21 @@ internal struct _TupleMirror : _Mirror {
   var valueType: Any.Type { return data.valueType }
   var objectIdentifier: ObjectIdentifier? { return nil }
   var count: Int {
-    @_silgen_name("swift_TupleMirror_count")get
+    return _getTupleCount(data)
   }
   subscript(i: Int) -> (String, _Mirror) {
-    return _subscript_get(i)
+    return _getTupleChild(i, data)
   }
-  @_silgen_name("swift_TupleMirror_subscript")
-  func _subscript_get<T>(i: Int) -> (T, _Mirror)
-
   var summary: String { return "(\(count) elements)" }
   var quickLookObject: PlaygroundQuickLook? { return nil }
   var disposition: _MirrorDisposition { return .tuple }
 }
+
+@_silgen_name("swift_StructMirror_count")
+func _getStructCount(_: _MagicMirrorData) -> Int
+
+@_silgen_name("swift_StructMirror_subscript")
+func _getStructChild<T>(_: Int, _: _MagicMirrorData) -> (T, _Mirror)
 
 struct _StructMirror : _Mirror {
   let data: _MagicMirrorData
@@ -434,13 +446,11 @@ struct _StructMirror : _Mirror {
   var valueType: Any.Type { return data.valueType }
   var objectIdentifier: ObjectIdentifier? { return nil }
   var count: Int {
-    @_silgen_name("swift_StructMirror_count")get
+    return _getStructCount(data)
   }
   subscript(i: Int) -> (String, _Mirror) {
-    return _subscript_get(i)
+    return _getStructChild(i, data)
   }
-  @_silgen_name("swift_StructMirror_subscript")
-  func _subscript_get<T>(i: Int) -> (T, _Mirror)
 
   var summary: String {
     return _typeName(valueType)
@@ -449,6 +459,16 @@ struct _StructMirror : _Mirror {
   var disposition: _MirrorDisposition { return .`struct` }
 }
 
+@_silgen_name("swift_EnumMirror_count")
+func _getEnumCount(_: _MagicMirrorData) -> Int
+
+@_silgen_name("swift_EnumMirror_subscript")
+func _getEnumChild<T>(_: Int, _: _MagicMirrorData) -> (T, _Mirror)
+
+@_silgen_name("swift_EnumMirror_caseName")
+func _swift_EnumMirror_caseName(
+    _ data: _MagicMirrorData) -> UnsafePointer<CChar>
+
 struct _EnumMirror : _Mirror {
   let data: _MagicMirrorData
 
@@ -456,16 +476,14 @@ struct _EnumMirror : _Mirror {
   var valueType: Any.Type { return data.valueType }
   var objectIdentifier: ObjectIdentifier? { return nil }
   var count: Int {
-    @_silgen_name("swift_EnumMirror_count")get
+    return _getEnumCount(data)
   }
   var caseName: UnsafePointer<CChar> {
-    @_silgen_name("swift_EnumMirror_caseName")get
+    return _swift_EnumMirror_caseName(data)
   }
   subscript(i: Int) -> (String, _Mirror) {
-    return _subscript_get(i)
+    return _getEnumChild(i, data)
   }
-  @_silgen_name("swift_EnumMirror_subscript")
-  func _subscript_get<T>(i: Int) -> (T, _Mirror)
 
   var summary: String {
     let maybeCaseName = String(validatingUTF8: self.caseName)
@@ -479,28 +497,58 @@ struct _EnumMirror : _Mirror {
   var disposition: _MirrorDisposition { return .`enum` }
 }
 
-@warn_unused_result
 @_silgen_name("swift_ClassMirror_count")
 func _getClassCount(_: _MagicMirrorData) -> Int
 
-// Like the other swift_*Mirror_subscript functions declared here and
-// elsewhere, this is implemented in the runtime.  The Swift CC would
-// normally require the String to be returned directly and the _Mirror
-// indirectly.  However, Clang isn't currently capable of doing that
-// reliably because the size of String exceeds the normal direct-return
-// ABI rules on most platforms.  Therefore, we make this function generic,
-// which has the disadvantage of passing the String type metadata as an
-// extra argument, but does force the string to be returned indirectly.
-@warn_unused_result
 @_silgen_name("swift_ClassMirror_subscript")
 func _getClassChild<T>(_: Int, _: _MagicMirrorData) -> (T, _Mirror)
 
 #if _runtime(_ObjC)
-@warn_unused_result
 @_silgen_name("swift_ClassMirror_quickLookObject")
-public func _getClassPlaygroundQuickLook(
-  data: _MagicMirrorData
-) -> PlaygroundQuickLook?
+public func _swift_ClassMirror_quickLookObject(_: _MagicMirrorData) -> AnyObject
+
+@_silgen_name("swift_isKind")
+func _swift_isKind(_ object: AnyObject, of: AnyObject) -> Bool
+
+func _isKind(_ object: AnyObject, of: String) -> Bool {
+  return _swift_isKind(object, of: _bridgeToObjectiveC(of)!)
+}
+
+func _getClassPlaygroundQuickLook(_ object: AnyObject) -> PlaygroundQuickLook? {
+  if _isKind(object, of: "NSNumber") {
+    let number: _NSNumber = unsafeBitCast(object, to: _NSNumber.self)
+    switch UInt8(number.objCType[0]) {
+    case UInt8(ascii: "d"):
+      return .double(number.doubleValue)
+    case UInt8(ascii: "f"):
+      return .float(number.floatValue)
+    case UInt8(ascii: "Q"):
+      return .uInt(number.unsignedLongLongValue)
+    default:
+      return .int(number.longLongValue)
+    }
+  } else if _isKind(object, of: "NSAttributedString") {
+    return .attributedString(object)
+  } else if _isKind(object, of: "NSImage") ||
+            _isKind(object, of: "UIImage") ||
+            _isKind(object, of: "NSImageView") ||
+            _isKind(object, of: "UIImageView") ||
+            _isKind(object, of: "CIImage") ||
+            _isKind(object, of: "NSBitmapImageRep") {
+    return .image(object)
+  } else if _isKind(object, of: "NSColor") ||
+            _isKind(object, of: "UIColor") {
+    return .color(object)
+  } else if _isKind(object, of: "NSBezierPath") ||
+            _isKind(object, of: "UIBezierPath") {
+    return .bezierPath(object)
+  } else if _isKind(object, of: "NSString") {
+    return .text(_forceBridgeFromObjectiveC(object, String.self))
+  }
+
+  return .none
+}
+
 #endif
 
 struct _ClassMirror : _Mirror {
@@ -522,7 +570,8 @@ struct _ClassMirror : _Mirror {
   }
   var quickLookObject: PlaygroundQuickLook? {
 #if _runtime(_ObjC)
-    return _getClassPlaygroundQuickLook(data)
+    let object = _swift_ClassMirror_quickLookObject(data)
+    return _getClassPlaygroundQuickLook(object)
 #else
     return nil
 #endif
@@ -581,6 +630,20 @@ struct _MetatypeMirror : _Mirror {
 extension ObjectIdentifier {
   @available(*, unavailable, message: "use the 'UInt(_:)' initializer")
   public var uintValue: UInt {
-    fatalError("unavailable function can't be called")
+    Builtin.unreachable()
+  }
+}
+
+extension UInt {
+  @available(*, unavailable, renamed: "init(bitPattern:)")
+  public init(_ objectID: ObjectIdentifier) {
+    Builtin.unreachable()
+  }
+}
+
+extension Int {
+  @available(*, unavailable, renamed: "init(bitPattern:)")
+  public init(_ objectID: ObjectIdentifier) {
+    Builtin.unreachable()
   }
 }

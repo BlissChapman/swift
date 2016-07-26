@@ -1,6 +1,7 @@
 // RUN: %target-swift-frontend %s -emit-ir -g -o - | FileCheck %s
 
-func markUsed<T>(t: T) {}
+func markUsed<T>(_ t: T) {}
+func use<T>(_ t: inout T) {}
 
 public protocol IGiveOutInts {
   func callMe() -> Int64
@@ -12,17 +13,17 @@ public protocol IGiveOutInts {
 // CHECK: @llvm.dbg.declare(metadata %P11protocolarg12IGiveOutInts_** %
 // CHECK-SAME:              metadata ![[ARG:.*]], metadata ![[DEREF:.*]])
 
-// FIXME: Should be DW_TAG_interface_type
-// CHECK: !DICompositeType(tag: DW_TAG_structure_type, name: "IGiveOutInts"
-// CHECK-SAME:             identifier: [[PT:"[^"]+"]]
+// CHECK: ![[EMPTY]] = !DIExpression()
 
-public func printSomeNumbers(gen: IGiveOutInts) {
+public func printSomeNumbers(_ gen: IGiveOutInts) {
   var gen = gen
-  // CHECK: ![[EMPTY]] = !DIExpression()
-  // CHECK: ![[VAR]] = !DILocalVariable(name: "gen", {{.*}} line: [[@LINE-2]]
+  // CHECK: ![[VAR]] = !DILocalVariable(name: "gen", {{.*}} line: [[@LINE-1]]
+  // FIXME: Should be DW_TAG_interface_type
+  // CHECK: ![[PT:.*]] = !DICompositeType(tag: DW_TAG_structure_type, name: "IGiveOutInts"
   // CHECK: ![[ARG]] = !DILocalVariable(name: "gen", arg: 1,
-  // CHECK-SAME:                        line: [[@LINE-5]], type: ![[PT]]
+  // CHECK-SAME:                        line: [[@LINE-6]], type: ![[PT]]
   // CHECK: ![[DEREF]] = !DIExpression(DW_OP_deref)
   markUsed(gen.callMe())
+  use(&gen)
 }
 

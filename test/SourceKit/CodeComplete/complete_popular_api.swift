@@ -10,12 +10,14 @@ func okay() {}
 struct Foo {
   func bad() { }
   func good() { }
+  func good(_ p1: Int, p2: Any..., p3: ()->(), p4: (Int, Int), p5: inout Int) { }
   func okay() {}
   var sad: Int
   var xhappy: Int
   var zmeh: Int
 }
 
+// REQUIRES: objc_interop
 // RUN: %sourcekitd-test -req=complete.open -pos=2:1 -req-opts=hidelowpriority=0 %s -- %s > %t.nopopular.top
 // RUN: %sourcekitd-test -req=complete.open -pos=3:5 %s -- %s > %t.nopopular.foo
 // RUN: FileCheck %s -check-prefix=NOPOP_TOP < %t.nopopular.top
@@ -38,11 +40,13 @@ struct Foo {
 
 // NOPOP_FOO: key.name: "bad()
 // NOPOP_FOO: key.name: "good()
+// NOPOP_FOO: key.name: "good(:p2:p3:p4:p5:)
 // NOPOP_FOO: key.name: "okay()
 // NOPOP_FOO: key.name: "sad
 // NOPOP_FOO: key.name: "xhappy
 // NOPOP_FOO: key.name: "zmeh
 
+// POP_FOO: key.name: "good(:p2:p3:p4:p5:)
 // POP_FOO: key.name: "good()
 // POP_FOO: key.name: "xhappy
 // POP_FOO: key.name: "okay()
@@ -75,17 +79,15 @@ struct OuterNominal {
 // POPULAR_STMT_0:   localColor
 // POPULAR_STMT_0:   fromDerivedColor
 // POPULAR_STMT_0:   fromSuperColor
-// POPULAR_STMT_0:   fromOuterNominalColor
 // POPULAR_STMT_0:   good()
-// POPULAR_STMT_0:   globalColor
-// POPULAR_STMT_0:   okay()
+// POPULAR_STMT_0:   fromOuterNominalColor
 // POPULAR_STMT_0:   DDModuleColor
 // POPULAR_STMT_0:   CCModuleColor
-// bad() ends up here because it's an unpopular global but that's still
-// generally better than "other module" results.
-// POPULAR_STMT_0:   bad()
 // POPULAR_STMT_0:   EEModuleColor
+// POPULAR_STMT_0:   globalColor
+// POPULAR_STMT_0:   okay()
 // POPULAR_STMT_0:   ModuleCollaborate
+// POPULAR_STMT_0:   bad()
 // POPULAR_STMT_0: ]
 // POPULAR_STMT_0-LABEL: Results for filterText: col [
 // POPULAR_STMT_0:   argColor

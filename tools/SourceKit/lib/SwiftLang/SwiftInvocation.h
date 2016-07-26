@@ -14,6 +14,7 @@
 #define LLVM_SOURCEKIT_LIB_SWIFTLANG_SWIFTINVOCATION_H
 
 #include "swift/Basic/ThreadSafeRefCounted.h"
+#include <string>
 #include <vector>
 
 namespace swift {
@@ -25,7 +26,7 @@ namespace SourceKit {
 
 /// Encompasses an invocation for getting an AST. This is used to control AST
 /// sharing among different requests.
-class SwiftInvocation : public swift::ThreadSafeRefCountedBase<SwiftInvocation> {
+class SwiftInvocation : public llvm::ThreadSafeRefCountedBase<SwiftInvocation> {
 public:
   ~SwiftInvocation();
 

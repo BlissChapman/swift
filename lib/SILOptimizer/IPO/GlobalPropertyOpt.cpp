@@ -28,7 +28,7 @@
 
 using namespace swift;
 
-STATISTIC(NumPropertiesReplaced,    "Number of array property calls replaced");
+STATISTIC(NumPropertiesReplaced, "Number of array property calls replaced");
 
 namespace {
 
@@ -134,6 +134,7 @@ class GlobalPropertyOpt {
     SILLinkage linkage;
     switch (accessibility) {
       case Accessibility::Private:
+      case Accessibility::FilePrivate:
         linkage = SILLinkage::Private;
         break;
       case Accessibility::Internal:

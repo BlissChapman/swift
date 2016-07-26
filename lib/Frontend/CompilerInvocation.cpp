@@ -48,27 +48,7 @@ static void updateRuntimeLibraryPath(SearchPathOptions &SearchPathOpts,
   llvm::sys::path::append(LibPath, getPlatformNameForTriple(Triple));
   SearchPathOpts.RuntimeLibraryPath = LibPath.str();
 
-  // The linux provided triple for ARM contains a trailing 'l'
-  // denoting little-endian.  This is not used in the path for
-  // libraries.  LLVM matches these SubArchTypes to the generic
-  // ARMSubArch_v7 (for example) type.  If that is the case,
-  // use the base of the architecture type in the library path.
-  if (Triple.isOSLinux()) {
-    switch(Triple.getSubArch()) {
-    default:
-      llvm::sys::path::append(LibPath, Triple.getArchName());
-      break;
-    case llvm::Triple::SubArchType::ARMSubArch_v7:
-      llvm::sys::path::append(LibPath, "armv7");
-      break;
-    case llvm::Triple::SubArchType::ARMSubArch_v6:
-      llvm::sys::path::append(LibPath, "armv6");
-      break;
-    }
-  } else {
-    llvm::sys::path::append(LibPath, Triple.getArchName());
-  }
-
+  llvm::sys::path::append(LibPath, swift::getMajorArchitectureName(Triple));
   SearchPathOpts.RuntimeLibraryImportPath = LibPath.str();
 }
 
@@ -112,32 +92,46 @@ static void debugFailWithCrash() {
   LLVM_BUILTIN_TRAP;
 }
 
-static unsigned readFileList(std::vector<std::string> &inputFiles,
-                             const llvm::opt::Arg *filelistPath,
-                             const llvm::opt::Arg *primaryFileArg = nullptr) {
-  bool foundPrimaryFile = false;
-  unsigned primaryFileIndex = 0;
-  StringRef primaryFile;
-  if (primaryFileArg)
-    primaryFile = primaryFileArg->getValue();
+/// Try to read a file list file.
+///
+/// Returns false on error.
+static bool readFileList(DiagnosticEngine &diags,
+                         std::vector<std::string> &inputFiles,
+                         const llvm::opt::Arg *filelistPath,
+                         const llvm::opt::Arg *primaryFileArg = nullptr,
+                         unsigned *primaryFileIndex = nullptr) {
+  assert((primaryFileArg == nullptr) || (primaryFileIndex != nullptr) &&
+         "did not provide argument for primary file index");
 
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
       llvm::MemoryBuffer::getFile(filelistPath->getValue());
-  assert(buffer && "can't read filelist; unrecoverable");
+  if (!buffer) {
+    diags.diagnose(SourceLoc(), diag::cannot_open_file,
+                   filelistPath->getValue(), buffer.getError().message());
+    return false;
+  }
+
+  bool foundPrimaryFile = false;
+  if (primaryFileIndex) *primaryFileIndex = 0;
 
   for (StringRef line : make_range(llvm::line_iterator(*buffer.get()), {})) {
     inputFiles.push_back(line);
-    if (foundPrimaryFile)
+
+    if (foundPrimaryFile || primaryFileArg == nullptr)
       continue;
-    if (line == primaryFile)
+    if (line == primaryFileArg->getValue())
       foundPrimaryFile = true;
     else
-      ++primaryFileIndex;
+      ++*primaryFileIndex;
   }
 
-  if (primaryFileArg)
-    assert(foundPrimaryFile && "primary file not found in filelist");
-  return primaryFileIndex;
+  if (primaryFileArg && !foundPrimaryFile) {
+    diags.diagnose(SourceLoc(), diag::error_primary_file_not_found,
+                   primaryFileArg->getValue(), filelistPath->getValue());
+    return false;
+  }
+
+  return true;
 }
 
 static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
@@ -181,6 +175,16 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
   Opts.DebugTimeFunctionBodies |= Args.hasArg(OPT_debug_time_function_bodies);
   Opts.DebugTimeCompilation |= Args.hasArg(OPT_debug_time_compilation);
 
+  if (const Arg *A = Args.getLastArg(OPT_warn_long_function_bodies)) {
+    unsigned attempt;
+    if (StringRef(A->getValue()).getAsInteger(10, attempt)) {
+      Diags.diagnose(SourceLoc(), diag::error_invalid_arg_value,
+                     A->getAsString(Args), A->getValue());
+    } else {
+      Opts.WarnLongFunctionBodies = attempt;
+    }
+  }
+
   Opts.PlaygroundTransform |= Args.hasArg(OPT_playground);
   if (Args.hasArg(OPT_disable_playground_transform))
     Opts.PlaygroundTransform = false;
@@ -199,11 +203,13 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
 
   if (const Arg *A = Args.getLastArg(OPT_filelist)) {
     const Arg *primaryFileArg = Args.getLastArg(OPT_primary_file);
-    auto primaryFileIndex = readFileList(Opts.InputFilenames, A,
-                                         primaryFileArg);
-    if (primaryFileArg)
-      Opts.PrimaryInput = SelectedInput(primaryFileIndex);
-    assert(!Args.hasArg(OPT_INPUT) && "mixing -filelist with inputs");
+    unsigned primaryFileIndex = 0;
+    if (readFileList(Diags, Opts.InputFilenames, A,
+                     primaryFileArg, &primaryFileIndex)) {
+      if (primaryFileArg)
+        Opts.PrimaryInput = SelectedInput(primaryFileIndex);
+      assert(!Args.hasArg(OPT_INPUT) && "mixing -filelist with inputs");
+    }
   } else {
     for (const Arg *A : make_range(Args.filtered_begin(OPT_INPUT,
                                                        OPT_primary_file),
@@ -355,7 +361,7 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     Opts.InputKind = InputFileKind::IFK_Swift;
 
   if (const Arg *A = Args.getLastArg(OPT_output_filelist)) {
-    readFileList(Opts.OutputFilenames, A);
+    readFileList(Diags, Opts.OutputFilenames, A);
     assert(!Args.hasArg(OPT_o) && "don't use -o with -output-filelist");
   } else {
     Opts.OutputFilenames = Args.getAllArgValues(OPT_o);
@@ -734,6 +740,12 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   Opts.EnableExperimentalPropertyBehaviors |=
     Args.hasArg(OPT_enable_experimental_property_behaviors);
 
+  Opts.EnableExperimentalNestedGenericTypes |=
+    Args.hasArg(OPT_enable_experimental_nested_generic_types);
+
+  Opts.EnableExperimentalCollectionCasts |=
+    Args.hasArg(OPT_enable_experimental_collection_casts);
+
   Opts.DisableAvailabilityChecking |=
       Args.hasArg(OPT_disable_availability_checking);
   
@@ -763,11 +775,11 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   Opts.Swift3Migration |= Args.hasArg(OPT_swift3_migration);
   Opts.WarnOmitNeedlessWords = Args.hasArg(OPT_warn_omit_needless_words);
   Opts.StripNSPrefix |= Args.hasArg(OPT_enable_strip_ns_prefix);
-  if (Args.hasArg(OPT_disable_infer_iuos)) {
-    Opts.InferIUOs = false;
-  }
+  Opts.InferImportAsMember |= Args.hasArg(OPT_enable_infer_import_as_member);
 
   Opts.EnableThrowWithoutTry |= Args.hasArg(OPT_enable_throw_without_try);
+  Opts.EnableProtocolTypealiases |= Args.hasArg(OPT_enable_protocol_typealiases);
+  Opts.EnableIdAsAny |= Args.hasArg(OPT_enable_id_as_any);
 
   if (auto A = Args.getLastArg(OPT_enable_objc_attr_requires_foundation_module,
                                OPT_disable_objc_attr_requires_foundation_module)) {
@@ -876,10 +888,14 @@ static bool ParseClangImporterArgs(ClangImporterOptions &Opts,
     });
   }
 
+  Opts.InferImportAsMember |= Args.hasArg(OPT_enable_infer_import_as_member);
+  Opts.HonorSwiftNewtypeAttr |= Args.hasArg(OPT_enable_swift_newtype);
   Opts.DumpClangDiagnostics |= Args.hasArg(OPT_dump_clang_diagnostics);
 
   if (Args.hasArg(OPT_embed_bitcode))
     Opts.Mode = ClangImporterOptions::Modes::EmbedBitcode;
+
+  Opts.DisableSwiftBridgeAttr |= Args.hasArg(OPT_disable_swift_bridge_attr);
 
   return false;
 }
@@ -1058,6 +1074,7 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
   Opts.RemoveRuntimeAsserts |= Args.hasArg(OPT_remove_runtime_asserts);
 
   Opts.EnableARCOptimizations |= !Args.hasArg(OPT_disable_arc_opts);
+  Opts.DisableSILPerfOptimizations |= Args.hasArg(OPT_disable_sil_perf_optzns);
   Opts.VerifyAll |= Args.hasArg(OPT_sil_verify_all);
   Opts.DebugSerialization |= Args.hasArg(OPT_sil_debug_serialization);
   Opts.EmitVerboseSIL |= Args.hasArg(OPT_emit_verbose_sil);
@@ -1129,11 +1146,13 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
       Opts.DebugInfoKind = IRGenDebugInfoKind::Normal;
     else if (A->getOption().matches(options::OPT_gline_tables_only))
       Opts.DebugInfoKind = IRGenDebugInfoKind::LineTables;
+    else if (A->getOption().matches(options::OPT_gdwarf_types))
+      Opts.DebugInfoKind = IRGenDebugInfoKind::DwarfTypes;
     else
       assert(A->getOption().matches(options::OPT_gnone) &&
              "unknown -g<kind> option");
 
-    if (Opts.DebugInfoKind == IRGenDebugInfoKind::Normal) {
+    if (Opts.DebugInfoKind > IRGenDebugInfoKind::LineTables) {
       ArgStringList RenderedArgs;
       for (auto A : Args)
         A->render(Args, RenderedArgs);
@@ -1218,6 +1237,8 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
   Opts.GenerateProfile |= Args.hasArg(OPT_profile_generate);
   Opts.PrintInlineTree |= Args.hasArg(OPT_print_llvm_inline_tree);
 
+  Opts.UseSwiftCall = Args.hasArg(OPT_enable_swiftcall);
+
   // This is set to true by default.
   Opts.UseIncrementalLLVMCodeGen &=
     !Args.hasArg(OPT_disable_incremental_llvm_codegeneration);
@@ -1255,19 +1276,22 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
     Opts.Sanitize = parseSanitizerArgValues(A, Triple, Diags);
   }
 
-  if (Args.hasArg(OPT_enable_reflection_metadata)) {
-    Opts.StripReflectionMetadata = false;
-    Opts.StripReflectionNames = false;
+  if (const Arg *A = Args.getLastArg(options::OPT_sanitize_coverage_EQ)) {
+    Opts.SanitizeCoverage =
+        parseSanitizerCoverageArgValue(A, Triple, Diags, Opts.Sanitize);
   }
 
-  if (Args.hasArg(OPT_strip_reflection_names)) {
-    Opts.StripReflectionNames = true;
+  if (Args.hasArg(OPT_disable_reflection_metadata)) {
+    Opts.EnableReflectionMetadata = false;
+    Opts.EnableReflectionNames = false;
   }
 
-  if (Args.hasArg(OPT_strip_reflection_metadata)) {
-    Opts.StripReflectionMetadata = true;
-    Opts.StripReflectionNames = true;
+  if (Args.hasArg(OPT_disable_reflection_names)) {
+    Opts.EnableReflectionNames = false;
   }
+
+  for (const auto &Lib : Args.getAllArgValues(options::OPT_autolink_library))
+    Opts.LinkLibraries.push_back(LinkLibrary(Lib, LibraryKind::Library));
 
   return false;
 }

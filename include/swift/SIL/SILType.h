@@ -285,10 +285,20 @@ public:
   /// True if the type, or the referenced type of an address type, is a
   /// scalar reference-counted type.
   bool isReferenceCounted(SILModule &M) const;
-  
+
+  /// Returns true if the referenced type is a function type that never
+  /// returns.
+  bool isNoReturnFunction() const;
+
   /// Returns true if the referenced type has reference semantics.
   bool hasReferenceSemantics() const {
     return getSwiftRValueType().hasReferenceSemantics();
+  }
+
+  /// Returns true if the referenced type is any sort of class-reference type,
+  /// meaning anything with reference semantics that is not a function type.
+  bool isAnyClassReferenceType() const {
+    return getSwiftRValueType().isAnyClassReferenceType();
   }
   
   /// Returns true if the referenced type is guaranteed to have a

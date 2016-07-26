@@ -5,13 +5,6 @@
 
 import StdlibUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-import SwiftPrivate
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 import Foundation
 
@@ -22,7 +15,7 @@ NSSetAPI.test("Sequence") {
   expectSequenceType(result)
 }
 
-private func compareAnythingAtAll(x: AnyObject, y: AnyObject)
+private func compareAnythingAtAll(_ x: AnyObject, y: AnyObject)
   -> ExpectedComparisonResult {
   switch (x.description < y.description, x.description == y.description) {
   case (true, _): return .lt
@@ -37,7 +30,7 @@ NSSetAPI.test("initWithObjects") {
   expectEqualsUnordered([1, "two"], result, compare: compareAnythingAtAll)
 }
 
-NSSetAPI.test("ArrayLiteralConvertible") {
+NSSetAPI.test("ExpressibleByArrayLiteral") {
   let result: NSSet = [1, "two"]
   expectEqualsUnordered([1, "two"], result, compare: compareAnythingAtAll)
 }
@@ -60,7 +53,7 @@ NSOrderedSetAPI.test("initWithObjects") {
   expectEqualsUnordered([1, "two"], result, compare: compareAnythingAtAll)
 }
 
-NSOrderedSetAPI.test("ArrayLiteralConvertible") {
+NSOrderedSetAPI.test("ExpressibleByArrayLiteral") {
   let result: NSOrderedSet = [1, "two"]
   expectEqualsUnordered([1, "two"], result, compare: compareAnythingAtAll)
 }
@@ -83,7 +76,7 @@ var NSIndexSetAPI = TestSuite("NSIndexSetAPI")
 
 NSIndexSetAPI.test("Sequence") {
   let result = NSIndexSet()
-  expectSequenceType(result)
+  let _ = expectSequenceType(result)
   let s = NSIndexSet(indexesIn: NSMakeRange(1, 1))
   var iter = s.makeIterator()
   // FIXME: Compiler doesn't accept these terms.

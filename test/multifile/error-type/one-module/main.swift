@@ -5,4 +5,7 @@
 
 // REQUIRES: executable_test
 
-extension NuclearMeltdown : ErrorProtocol {}
+// FIXME: Fails on iPhone simulator target due to possible MC-JIT bug
+// REQUIRES: disabled 
+
+extension NuclearMeltdown : Error {}

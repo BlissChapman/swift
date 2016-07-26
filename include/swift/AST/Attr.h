@@ -94,6 +94,7 @@ public:
 namespace IntrinsicPrecedences {
   enum : unsigned char {
     MinPrecedence = 0,
+    ArrowExpr = 0, // ->
     IfExpr = 100, // ?:
     AssignExpr = 90, // =
     ExplicitCastExpr = 132, // 'is' and 'as'
@@ -151,7 +152,8 @@ public:
   // an empty list.
   bool empty() const {
     for (SourceLoc elt : AttrLocs)
-      if (elt.isValid()) return false;
+      if (elt.isValid())
+        return false;
     
     return true;
   }
@@ -180,6 +182,9 @@ public:
   /// corresponds to it.  This returns TAK_Count on failure.
   ///
   static TypeAttrKind getAttrKindFromString(StringRef Str);
+
+  /// Return the name (like "autoclosure") for an attribute ID.
+  static const char *getAttrName(TypeAttrKind kind);
 };
 
 class AttributeBase {
@@ -616,9 +621,16 @@ enum class MinVersionComparison {
 
 /// Describes the unconditional availability of a declaration.
 enum class UnconditionalAvailabilityKind {
+  /// The declaration is not unconditionally unavailable.
   None,
+  /// The declaration is deprecated, but can still be used.
   Deprecated,
+  /// The declaration is unavailable in Swift, specifically
   UnavailableInSwift,
+  /// The declaration is unavailable in the current version of Swift,
+  /// but was available in previous Swift versions.
+  UnavailableInCurrentSwift,
+  /// The declaration is unavailable for other reasons.
   Unavailable,
 };
 
@@ -652,6 +664,10 @@ public:
 
   /// An optional replacement string to emit in a fixit.  This allows simple
   /// declaration renames to be applied by Xcode.
+  ///
+  /// This should take the form of an operator, identifier, or full function
+  /// name, optionally with a prefixed type, similar to the syntax used for
+  /// the `NS_SWIFT_NAME` annotation in Objective-C.
   const StringRef Rename;
 
   /// Indicates when the symbol was introduced.
@@ -1063,59 +1079,6 @@ public:
   }
 };
 
-/// The @warn_unused_result attribute, which specifies that we should
-/// receive a warning if a function is called but its result is
-/// unused.
-///
-/// The @warn_unused_result attribute can optionally be provided with
-/// a message and a mutable variant. For example:
-///
-/// \code
-/// struct X {
-///   @warn_unused_result(message: "this string affects your health")
-///   func methodA() -> String { ... }
-///
-///   @warn_unused_result(mutable_variant: "jumpInPlace")
-///   func jump() -> X { ... }
-///
-///   mutating func jumpInPlace() { ... }
-/// }
-/// \endcode
-class WarnUnusedResultAttr : public DeclAttribute {
-  /// The optional message.
-  const StringRef Message;
-
-  /// An optional name of the mutable variant of the given method,
-  /// which will be suggested as a replacement if it can be called.
-  const StringRef MutableVariant;
-
-public:
-  /// A @warn_unused_result attribute with no options.
-  WarnUnusedResultAttr(SourceLoc atLoc, SourceLoc attrLoc, bool implicit)
-    : DeclAttribute(DAK_WarnUnusedResult, atLoc, SourceRange(atLoc, attrLoc),
-                    implicit),
-      Message(""), MutableVariant("") { }
-
-  /// A @warn_unused_result attribute with a message or mutable variant.
-  WarnUnusedResultAttr(SourceLoc atLoc, SourceLoc attrLoc, SourceLoc lParenLoc,
-                       StringRef message, StringRef mutableVariant,
-                       SourceLoc rParenLoc, bool implicit)
-    : DeclAttribute(DAK_WarnUnusedResult, attrLoc,
-                    SourceRange(atLoc, rParenLoc),
-                    implicit),
-      Message(message), MutableVariant(mutableVariant) { }
-
-  /// Retrieve the message associated with this attribute.
-  StringRef getMessage() const { return Message; }
-
-  /// Retrieve the name of the mutable variant of this method.
-  StringRef getMutableVariant() const { return MutableVariant; }
-
-  static bool classof(const DeclAttribute *DA) {
-    return DA->getKind() == DAK_WarnUnusedResult;
-  }
-};
-
 /// The @swift3_migration attribute which describes the transformations
 /// required to migrate the given Swift 2.x API to Swift 3.
 class Swift3MigrationAttr : public DeclAttribute {
@@ -1201,6 +1164,10 @@ public:
     return getUnavailable(ctx) != nullptr;
   }
 
+  /// Determine whether there is an "unavailable in current Swift"
+  /// attribute.
+  bool isUnavailableInCurrentSwift() const;
+
   /// Returns the first @available attribute that indicates
   /// a declaration is unavailable, or null otherwise.
   const AvailableAttr *getUnavailable(const ASTContext &ctx) const;
@@ -1283,10 +1250,10 @@ private:
   template <typename ATTR, bool AllowInvalid> struct ToAttributeKind {
     ToAttributeKind() {}
 
-    Optional<const DeclAttribute *>
+    Optional<const ATTR *>
     operator()(const DeclAttribute *Attr) const {
       if (isa<ATTR>(Attr) && (Attr->isValid() || AllowInvalid))
-        return Attr;
+        return cast<ATTR>(Attr);
       return None;
     }
   };

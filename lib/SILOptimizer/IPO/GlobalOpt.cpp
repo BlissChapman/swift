@@ -366,7 +366,7 @@ static bool isAvailabilityCheckOnDomPath(SILBasicBlock *From, SILBasicBlock *To,
     return false;
 
   auto *Node = DT->getNode(To)->getIDom();
-  for(;;) {
+  for (;;) {
     SILBasicBlock *BB = Node->getBlock();
     if (isAvailabilityCheck(BB))
       return true;
@@ -583,14 +583,14 @@ static SILInstruction *convertLoadSequence(SILInstruction *I,
   }
 
   // It is a series of struct_element_addr followed by load.
-  if(auto *SEAI = dyn_cast<StructElementAddrInst>(I)) {
+  if (auto *SEAI = dyn_cast<StructElementAddrInst>(I)) {
     Value =
         convertLoadSequence(cast<SILInstruction>(SEAI->getOperand()), Value, B);
     auto *SEI = B.createStructExtract(SEAI->getLoc(), Value, SEAI->getField());
     return SEI;
   }
 
-  if(auto *TEAI = dyn_cast<TupleElementAddrInst>(I)) {
+  if (auto *TEAI = dyn_cast<TupleElementAddrInst>(I)) {
     Value =
         convertLoadSequence(cast<SILInstruction>(TEAI->getOperand()), Value, B);
     auto *TEI = B.createTupleExtract(TEAI->getLoc(), Value, TEAI->getFieldNo());
@@ -740,13 +740,15 @@ static bool canBeChangedExternally(SILGlobalVariable *SILG) {
   // Use access specifiers from the declarations,
   // if possible.
   if (auto *Decl = SILG->getDecl()) {
-    auto Access = Decl->getFormalAccess();
-    if (Access == Accessibility::Private)
+    switch (Decl->getEffectiveAccess()) {
+    case Accessibility::Private:
+    case Accessibility::FilePrivate:
       return false;
-    if (Access == Accessibility::Internal &&
-        SILG->getModule().isWholeModule())
-      return false;
-    return true;
+    case Accessibility::Internal:
+      return !SILG->getModule().isWholeModule();
+    case Accessibility::Public:
+      return true;
+    }
   }
 
   if (SILG->getLinkage() == SILLinkage::Private)

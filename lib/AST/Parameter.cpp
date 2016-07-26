@@ -47,9 +47,27 @@ ParameterList::create(const ASTContext &C, SourceLoc LParenLoc,
 /// Note that this decl is created, but it is returned with an incorrect
 /// DeclContext that needs to be set correctly.  This is automatically handled
 /// when a function is created with this as part of its argument list.
+/// For a generic context, this also gives the parameter an unbound generic
+/// type with the expectation that type-checking will fill in the context
+/// generic parameters.
+ParameterList *ParameterList::createUnboundSelf(SourceLoc loc,
+                                                DeclContext *DC,
+                                                bool isStaticMethod,
+                                                bool isInOut) {
+  auto *PD = ParamDecl::createUnboundSelf(loc, DC, isStaticMethod, isInOut);
+  return create(DC->getASTContext(), PD);
+}
+
+/// Create an implicit 'self' decl for a method in the specified decl context.
+/// If 'static' is true, then this is self for a static method in the type.
 ///
-ParameterList *ParameterList::createSelf(SourceLoc loc, DeclContext *DC,
-                                         bool isStaticMethod, bool isInOut) {
+/// Note that this decl is created, but it is returned with an incorrect
+/// DeclContext that needs to be set correctly.  This is automatically handled
+/// when a function is created with this as part of its argument list.
+ParameterList *ParameterList::createSelf(SourceLoc loc,
+                                         DeclContext *DC,
+                                         bool isStaticMethod,
+                                         bool isInOut) {
   auto *PD = ParamDecl::createSelf(loc, DC, isStaticMethod, isInOut);
   return create(DC->getASTContext(), PD);
 }
@@ -60,8 +78,6 @@ void ParameterList::setDeclContextOfParamDecls(DeclContext *DC) {
   for (auto P : *this)
     P->setDeclContext(DC);
 }
-
-
 
 /// Make a duplicate copy of this parameter list.  This allocates copies of
 /// the ParamDecls, so they can be reparented into a new DeclContext.
@@ -108,10 +124,41 @@ Type ParameterList::getType(const ASTContext &C) const {
     
     argumentInfo.push_back({
       P->getType(), P->getArgumentName(),
-      P->getDefaultArgumentKind(), P->isVariadic()
+      P->isVariadic()
     });
   }
   
+  return TupleType::get(argumentInfo, C);
+}
+
+/// Hack to deal with the fact that Sema/CodeSynthesis.cpp creates ParamDecls
+/// containing contextual types.
+Type ParameterList::getInterfaceType(DeclContext *DC) const {
+  auto &C = DC->getASTContext();
+
+  if (size() == 0)
+    return TupleType::getEmpty(C);
+
+  SmallVector<TupleTypeElt, 8> argumentInfo;
+
+  for (auto P : *this) {
+    assert(P->hasType());
+
+    Type type;
+    if (P->hasInterfaceType())
+      type = P->getInterfaceType();
+    else if (!P->getTypeLoc().hasLocation())
+      type = ArchetypeBuilder::mapTypeOutOfContext(DC, P->getType());
+    else
+      type = P->getType();
+    assert(!type->hasArchetype());
+
+    argumentInfo.push_back({
+      type, P->getArgumentName(),
+      P->isVariadic()
+    });
+  }
+
   return TupleType::get(argumentInfo, C);
 }
 
@@ -120,17 +167,17 @@ Type ParameterList::getType(const ASTContext &C) const {
 /// returns the specified result type.  This returns a null type if one of the
 /// ParamDecls does not have a type set for it yet.
 ///
-Type ParameterList::getFullType(Type resultType, ArrayRef<ParameterList*> PLL) {
+Type ParameterList::getFullInterfaceType(Type resultType,
+                                         ArrayRef<ParameterList*> PLL,
+                                         DeclContext *DC) {
   auto result = resultType;
-  auto &C = result->getASTContext();
-  
   for (auto PL : reversed(PLL)) {
-    auto paramType = PL->getType(C);
-    if (!paramType) return Type();
+    auto paramType = PL->getInterfaceType(DC);
     result = FunctionType::get(paramType, result);
   }
   return result;
 }
+
 
 /// Return the full source range of this parameter list.
 SourceRange ParameterList::getSourceRange() const {

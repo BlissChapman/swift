@@ -104,6 +104,9 @@ class LinkEntity {
     /// An Objective-C class reference.  The pointer is a ClassDecl*.
     ObjCClass,
 
+    /// An Objective-C class reference reference.  The pointer is a ClassDecl*.
+    ObjCClassRef,
+
     /// An Objective-C metaclass reference.  The pointer is a ClassDecl*.
     ObjCMetaclass,
 
@@ -320,6 +323,12 @@ public:
     return entity;
   }
 
+  static LinkEntity forObjCClassRef(ClassDecl *decl) {
+    LinkEntity entity;
+    entity.setForDecl(Kind::ObjCClassRef, decl, 0);
+    return entity;
+  }
+
   static LinkEntity forObjCClass(ClassDecl *decl) {
     LinkEntity entity;
     entity.setForDecl(Kind::ObjCClass, decl, 0);
@@ -489,6 +498,7 @@ public:
 
   void mangle(llvm::raw_ostream &out) const;
   void mangle(SmallVectorImpl<char> &buffer) const;
+  std::string mangleAsString() const;
   SILLinkage getLinkage(IRGenModule &IGM, ForDefinition_t isDefinition) const;
 
   /// Returns true if this function or global variable is potentially defined
@@ -510,7 +520,17 @@ public:
     assert(getKind() == Kind::SILFunction);
     return reinterpret_cast<SILFunction*>(Pointer);
   }
-  
+
+  /// Returns true if this function is only serialized, but not necessarily
+  /// code-gen'd. These are fragile transparent functions.
+  bool isSILOnly() const {
+    if (getKind() != Kind::SILFunction)
+      return false;
+
+    SILFunction *F = getSILFunction();
+    return F->isTransparent() && F->isDefinition() && F->isFragile();
+  }
+
   SILGlobalVariable *getSILGlobalVariable() const {
     assert(getKind() == Kind::SILGlobalVariable);
     return reinterpret_cast<SILGlobalVariable*>(Pointer);
@@ -569,6 +589,10 @@ public:
         getSILGlobalVariable()->getDecl())
       return getSILGlobalVariable()->getDecl()->isWeakImported(module);
 
+    if (getKind() == Kind::SILFunction)
+      if (auto clangOwner = getSILFunction()->getClangNodeOwner())
+        return clangOwner->isWeakImported(module);
+
     if (!isDeclKind(getKind()))
       return false;
 
@@ -585,6 +609,7 @@ class LinkInfo {
   llvm::SmallString<32> Name;
   llvm::GlobalValue::LinkageTypes Linkage;
   llvm::GlobalValue::VisibilityTypes Visibility;
+  llvm::GlobalValue::DLLStorageClassTypes DLLStorageClass;
   ForDefinition_t ForDefinition;
 
 public:
@@ -600,6 +625,9 @@ public:
   }
   llvm::GlobalValue::VisibilityTypes getVisibility() const {
     return Visibility;
+  }
+  llvm::GlobalValue::DLLStorageClassTypes getDLLStorage() const {
+    return DLLStorageClass;
   }
 
   llvm::Function *createFunction(IRGenModule &IGM,
@@ -617,11 +645,12 @@ public:
                                   StringRef DebugName = StringRef());
 
   bool isUsed() const {
-    return ForDefinition && isUsed(Linkage, Visibility);
+    return ForDefinition && isUsed(Linkage, Visibility, DLLStorageClass);
   }
-  
+
   static bool isUsed(llvm::GlobalValue::LinkageTypes Linkage,
-                     llvm::GlobalValue::VisibilityTypes Visibility);
+                     llvm::GlobalValue::VisibilityTypes Visibility,
+                     llvm::GlobalValue::DLLStorageClassTypes DLLStorage);
 };
 
 } // end namespace irgen

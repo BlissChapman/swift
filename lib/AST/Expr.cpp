@@ -183,6 +183,24 @@ Expr *Expr::getValueProvidingExpr() {
   return E;
 }
 
+DeclRefExpr *Expr::getMemberOperatorRef() {
+  auto expr = this;
+  if (!expr->isImplicit()) return nullptr;
+
+  auto dotSyntax = dyn_cast<DotSyntaxCallExpr>(expr);
+  if (!dotSyntax) return nullptr;
+
+  auto operatorRef = dyn_cast<DeclRefExpr>(dotSyntax->getFn());
+  if (!operatorRef) return nullptr;
+
+  auto func = dyn_cast<FuncDecl>(operatorRef->getDecl());
+  if (!func) return nullptr;
+
+  if (!func->isOperator()) return nullptr;
+
+  return operatorRef;
+}
+
 /// Propagate l-value use information to children.
 void Expr::propagateLValueAccessKind(AccessKind accessKind,
                                      bool allowOverwrite) {
@@ -315,6 +333,8 @@ void Expr::propagateLValueAccessKind(AccessKind accessKind,
     NON_LVALUE_EXPR(DefaultValue)
     NON_LVALUE_EXPR(CodeCompletion)
     NON_LVALUE_EXPR(ObjCSelector)
+    NON_LVALUE_EXPR(ObjCKeyPath)
+    NON_LVALUE_EXPR(EnumIsCase)
 
 #define UNCHECKED_EXPR(KIND, BASE) \
     NON_LVALUE_EXPR(KIND)
@@ -326,6 +346,145 @@ void Expr::propagateLValueAccessKind(AccessKind accessKind,
   };
 
   PropagateAccessKind(allowOverwrite).visit(this, accessKind);
+}
+
+ConcreteDeclRef Expr::getReferencedDecl() const {
+  switch (getKind()) {
+  // No declaration reference.
+  #define NO_REFERENCE(Id) case ExprKind::Id: return ConcreteDeclRef()
+  #define SIMPLE_REFERENCE(Id, Getter)          \
+    case ExprKind::Id:                          \
+      return cast<Id##Expr>(this)->Getter()
+  #define PASS_THROUGH_REFERENCE(Id, GetSubExpr)                      \
+    case ExprKind::Id:                                                \
+      return cast<Id##Expr>(this)->GetSubExpr()->getReferencedDecl()
+
+  NO_REFERENCE(Error);
+  NO_REFERENCE(NilLiteral);
+  NO_REFERENCE(IntegerLiteral);
+  NO_REFERENCE(FloatLiteral);
+  NO_REFERENCE(BooleanLiteral);
+  NO_REFERENCE(StringLiteral);
+  NO_REFERENCE(InterpolatedStringLiteral);
+  NO_REFERENCE(ObjectLiteral);
+  NO_REFERENCE(MagicIdentifierLiteral);
+  NO_REFERENCE(DiscardAssignment);
+
+  SIMPLE_REFERENCE(DeclRef, getDecl);
+  SIMPLE_REFERENCE(SuperRef, getSelf);
+
+  case ExprKind::Type: {
+    auto typeRepr = cast<TypeExpr>(this)->getTypeRepr();
+    if (!typeRepr) return ConcreteDeclRef();
+    auto ident = dyn_cast<IdentTypeRepr>(typeRepr);
+    if (!ident) return ConcreteDeclRef();
+    return ident->getComponentRange().back()->getBoundDecl();
+  }
+
+  SIMPLE_REFERENCE(OtherConstructorDeclRef, getDecl);
+
+  PASS_THROUGH_REFERENCE(DotSyntaxBaseIgnored, getRHS);
+
+  // FIXME: Return multiple results?
+  case ExprKind::OverloadedDeclRef:
+  case ExprKind::OverloadedMemberRef:
+    return ConcreteDeclRef();
+
+  NO_REFERENCE(UnresolvedDeclRef);
+
+  SIMPLE_REFERENCE(MemberRef, getMember);
+  SIMPLE_REFERENCE(DynamicMemberRef, getMember);
+  SIMPLE_REFERENCE(DynamicSubscript, getMember);
+
+  PASS_THROUGH_REFERENCE(UnresolvedSpecialize, getSubExpr);
+
+  NO_REFERENCE(UnresolvedMember);
+  NO_REFERENCE(UnresolvedDot);
+  NO_REFERENCE(Sequence);
+  PASS_THROUGH_REFERENCE(Paren, getSubExpr);
+  PASS_THROUGH_REFERENCE(DotSelf, getSubExpr);
+  PASS_THROUGH_REFERENCE(Try, getSubExpr);
+  PASS_THROUGH_REFERENCE(ForceTry, getSubExpr);
+  PASS_THROUGH_REFERENCE(OptionalTry, getSubExpr);
+
+  NO_REFERENCE(Tuple);
+  NO_REFERENCE(Array);
+  NO_REFERENCE(Dictionary);
+
+  case ExprKind::Subscript: {
+    auto subscript = cast<SubscriptExpr>(this);
+    if (subscript->hasDecl()) return subscript->getDecl();
+    return ConcreteDeclRef();
+  }
+
+  NO_REFERENCE(TupleElement);
+  NO_REFERENCE(CaptureList);
+  NO_REFERENCE(Closure);
+
+  PASS_THROUGH_REFERENCE(AutoClosure, getSingleExpressionBody);
+  PASS_THROUGH_REFERENCE(InOut, getSubExpr);
+
+  NO_REFERENCE(DynamicType);
+
+  PASS_THROUGH_REFERENCE(RebindSelfInConstructor, getSubExpr);
+
+  NO_REFERENCE(OpaqueValue);
+  PASS_THROUGH_REFERENCE(BindOptional, getSubExpr);
+  PASS_THROUGH_REFERENCE(OptionalEvaluation, getSubExpr);
+  PASS_THROUGH_REFERENCE(ForceValue, getSubExpr);
+  PASS_THROUGH_REFERENCE(OpenExistential, getSubExpr);
+
+  NO_REFERENCE(Call);
+  NO_REFERENCE(PrefixUnary);
+  NO_REFERENCE(PostfixUnary);
+  NO_REFERENCE(Binary);
+  NO_REFERENCE(DotSyntaxCall);
+  NO_REFERENCE(ConstructorRefCall);
+
+  PASS_THROUGH_REFERENCE(Load, getSubExpr);
+  NO_REFERENCE(TupleShuffle);
+  NO_REFERENCE(UnresolvedTypeConversion);
+  PASS_THROUGH_REFERENCE(FunctionConversion, getSubExpr);
+  PASS_THROUGH_REFERENCE(CovariantFunctionConversion, getSubExpr);
+  PASS_THROUGH_REFERENCE(CovariantReturnConversion, getSubExpr);
+  PASS_THROUGH_REFERENCE(MetatypeConversion, getSubExpr);
+  PASS_THROUGH_REFERENCE(CollectionUpcastConversion, getSubExpr);
+  PASS_THROUGH_REFERENCE(Erasure, getSubExpr);
+  PASS_THROUGH_REFERENCE(DerivedToBase, getSubExpr);
+  PASS_THROUGH_REFERENCE(ArchetypeToSuper, getSubExpr);
+  PASS_THROUGH_REFERENCE(InjectIntoOptional, getSubExpr);
+  PASS_THROUGH_REFERENCE(ClassMetatypeToObject, getSubExpr);
+  PASS_THROUGH_REFERENCE(ExistentialMetatypeToObject, getSubExpr);
+  PASS_THROUGH_REFERENCE(ProtocolMetatypeToObject, getSubExpr);
+  PASS_THROUGH_REFERENCE(InOutToPointer, getSubExpr);
+  PASS_THROUGH_REFERENCE(ArrayToPointer, getSubExpr);
+  PASS_THROUGH_REFERENCE(StringToPointer, getSubExpr);
+  PASS_THROUGH_REFERENCE(PointerToPointer, getSubExpr);
+  PASS_THROUGH_REFERENCE(LValueToPointer, getSubExpr);
+  PASS_THROUGH_REFERENCE(ForeignObjectConversion, getSubExpr);
+  PASS_THROUGH_REFERENCE(UnevaluatedInstance, getSubExpr);
+  NO_REFERENCE(Coerce);
+  NO_REFERENCE(ForcedCheckedCast);
+  NO_REFERENCE(ConditionalCheckedCast);
+  NO_REFERENCE(Is);
+
+  NO_REFERENCE(Arrow);
+  NO_REFERENCE(If);
+  NO_REFERENCE(EnumIsCase);
+  NO_REFERENCE(Assign);
+  NO_REFERENCE(DefaultValue);
+  NO_REFERENCE(CodeCompletion);
+  NO_REFERENCE(UnresolvedPattern);
+  NO_REFERENCE(EditorPlaceholder);
+  NO_REFERENCE(ObjCSelector);
+  NO_REFERENCE(ObjCKeyPath);
+
+#undef SIMPLE_REFERENCE
+#undef NO_REFERENCE
+#undef PASS_THROUGH_REFERENCE
+  }
+
+  return ConcreteDeclRef();
 }
 
 /// Enumerate each immediate child expression of this node, invoking the
@@ -489,6 +648,7 @@ bool Expr::canAppendCallParentheses() const {
   case ExprKind::InterpolatedStringLiteral:
   case ExprKind::MagicIdentifierLiteral:
   case ExprKind::ObjCSelector:
+  case ExprKind::ObjCKeyPath:
     return true;
 
   case ExprKind::ObjectLiteral:
@@ -597,7 +757,12 @@ bool Expr::canAppendCallParentheses() const {
   case ExprKind::PointerToPointer:
   case ExprKind::LValueToPointer:
   case ExprKind::ForeignObjectConversion:
-    return false;
+  case ExprKind::UnevaluatedInstance:
+  case ExprKind::EnumIsCase:
+    // Implicit conversion nodes have no syntax of their own; defer to the
+    // subexpression.
+    return cast<ImplicitConversionExpr>(this)->getSubExpr()
+      ->canAppendCallParentheses();
 
   case ExprKind::ForcedCheckedCast:
   case ExprKind::ConditionalCheckedCast:
@@ -605,6 +770,7 @@ bool Expr::canAppendCallParentheses() const {
   case ExprKind::Coerce:
     return false;
 
+  case ExprKind::Arrow:
   case ExprKind::If:
   case ExprKind::Assign:
   case ExprKind::DefaultValue:
@@ -739,9 +905,8 @@ shallowCloneImpl(const MagicIdentifierLiteralExpr *E, ASTContext &Ctx) {
 
 static LiteralExpr *
 shallowCloneImpl(const ObjectLiteralExpr *E, ASTContext &Ctx) {
-  auto res = new (Ctx) ObjectLiteralExpr(E->getStartLoc(), E->getName(),
-                                         E->getNameLoc(), E->getArg(),
-                                         E->getEndLoc());
+  auto res = new (Ctx) ObjectLiteralExpr(E->getStartLoc(), E->getLiteralKind(),
+                                         E->getArg());
   res->setSemanticExpr(E->getSemanticExpr());
   return res;
 }
@@ -840,6 +1005,65 @@ StringLiteralExpr::StringLiteralExpr(StringRef Val, SourceRange Range,
       unicode::isSingleUnicodeScalar(Val);
   StringLiteralExprBits.IsSingleExtendedGraphemeCluster =
       unicode::isSingleExtendedGraphemeCluster(Val);
+}
+
+static ArrayRef<Identifier>
+getArgumentLabelsFromArgument(Expr *arg, SmallVectorImpl<Identifier> &scratch) {
+  // A parenthesized expression is a single, unlabeled argument.
+  if (isa<ParenExpr>(arg)) {
+    scratch.clear();
+    scratch.push_back(Identifier());
+    return scratch;
+  }
+
+  // A tuple expression stores its element names, if they exist.
+  if (auto tuple = dyn_cast<TupleExpr>(arg)) {
+    if (tuple->hasElementNames()) return tuple->getElementNames();
+    scratch.assign(tuple->getNumElements(), Identifier());
+    return scratch;
+  }
+
+  // Otherwise, use the type information.
+  auto type = arg->getType();
+  if (isa<ParenType>(type.getPointer())) {
+    scratch.clear();
+    scratch.push_back(Identifier());
+    return scratch;    
+  }
+
+  // FIXME: Should be a dyn_cast.
+  if (auto tupleTy = type->getAs<TupleType>()) {
+    scratch.clear();
+    for (const auto &elt : tupleTy->getElements())
+      scratch.push_back(elt.getName());
+    return scratch;
+  }
+
+  // FIXME: Shouldn't get here.
+  scratch.clear();
+  scratch.push_back(Identifier());
+  return scratch;    
+}
+
+StringRef ObjectLiteralExpr::getLiteralKindRawName() const {
+  switch (LitKind) {
+#define POUND_OBJECT_LITERAL(Name, Desc, Proto) case Name: return #Name;
+#include "swift/Parse/Tokens.def"    
+  }
+  llvm_unreachable("unspecified literal");
+}
+
+StringRef ObjectLiteralExpr::getLiteralKindPlainName() const {
+  switch (LitKind) {
+#define POUND_OBJECT_LITERAL(Name, Desc, Proto) case Name: return Desc;
+#include "swift/Parse/Tokens.def"    
+  }
+  llvm_unreachable("unspecified literal");
+}
+
+ArrayRef<Identifier>
+ObjectLiteralExpr::getArgumentLabels(SmallVectorImpl<Identifier> &scratch) {
+  return getArgumentLabelsFromArgument(getArg(), scratch);
 }
 
 void DeclRefExpr::setSpecialized() {
@@ -1009,6 +1233,145 @@ static ValueDecl *getCalledValue(Expr *E) {
 
 ValueDecl *ApplyExpr::getCalledValue() const {
   return ::getCalledValue(Fn);
+}
+
+ArrayRef<Identifier>
+SubscriptExpr::getArgumentLabels(SmallVectorImpl<Identifier> &scratch) {
+  return getArgumentLabelsFromArgument(getIndex(), scratch);
+}
+
+ArrayRef<Identifier>
+DynamicSubscriptExpr::getArgumentLabels(SmallVectorImpl<Identifier> &scratch) {
+  return getArgumentLabelsFromArgument(getIndex(), scratch);
+}
+
+ArrayRef<Identifier>
+UnresolvedMemberExpr::getArgumentLabels(SmallVectorImpl<Identifier> &scratch) {
+  if (!getArgument()) return { };
+  return getArgumentLabelsFromArgument(getArgument(), scratch);
+}
+
+ArrayRef<Identifier>
+ApplyExpr::getArgumentLabels(SmallVectorImpl<Identifier> &scratch) {
+  // Unary operators and 'self' applications have a single, unlabeled argument.
+  if (isa<PrefixUnaryExpr>(this) || isa<PostfixUnaryExpr>(this) ||
+      isa<SelfApplyExpr>(this)) {
+    scratch.clear();
+    scratch.push_back(Identifier());
+    return scratch;
+  }
+
+  // Binary operators have two unlabeled arguments.
+  if (isa<BinaryExpr>(this)) {
+    scratch.clear();
+    scratch.reserve(2);
+    scratch.push_back(Identifier());
+    scratch.push_back(Identifier());
+    return scratch;    
+  }
+
+  // For calls, dig the argument labels out of the argument itself.
+  auto call = cast<CallExpr>(this);
+  return getArgumentLabelsFromArgument(call->getArg(), scratch);
+}
+
+CallExpr *CallExpr::create(ASTContext &ctx, Expr *fn, Expr *arg,
+                           bool implicit, Type type) {
+  return new (ctx) CallExpr(fn, arg, implicit, type);
+}
+
+CallExpr *CallExpr::create(ASTContext &ctx, Expr *fn,
+                           SourceLoc lParenLoc,
+                           ArrayRef<Expr *> args,
+                           ArrayRef<Identifier> argLabels,
+                           ArrayRef<SourceLoc> argLabelLocs,
+                           SourceLoc rParenLoc,
+                           Expr *trailingClosure,
+                           bool implicit) {
+  // Local function to compute the type of the argument, if all of its pieces
+  // have a type.
+  auto computeArgType = [&](Expr *arg) {
+    // Propagate 'implicit' to the argument.
+    if (implicit)
+      arg->setImplicit(true);
+
+    // Handle parenthesized expressions.
+    if (auto paren = dyn_cast<ParenExpr>(arg)) {
+      if (auto type = paren->getSubExpr()->getType()) {
+        arg->setType(ParenType::get(ctx, type));
+      }
+      return;
+    }
+
+    // Handle tuples.
+    auto tuple = dyn_cast<TupleExpr>(arg);
+    SmallVector<TupleTypeElt, 4> typeElements;
+    for (unsigned i = 0, n = tuple->getNumElements(); i != n; ++i) {
+      auto type = tuple->getElement(i)->getType();
+      if (!type) return;
+
+      typeElements.push_back(TupleTypeElt(type, tuple->getElementName(i)));
+    }
+    arg->setType(TupleType::get(typeElements, ctx));
+  };
+
+  // Construct a TupleExpr or ParenExpr, as appropriate, for the argument.
+  if (!trailingClosure) {
+    // Do we have a single, unlabeled argument?
+    if (args.size() == 1 && (argLabels.empty() || argLabels[0].empty())) {
+      auto arg = new (ctx) ParenExpr(lParenLoc, args[0], rParenLoc,
+                                     /*hasTrailingClosure=*/false);
+      computeArgType(arg);
+      return new (ctx) CallExpr(fn, arg, implicit);
+    }
+
+    // Construct the argument tuple.
+    auto arg = TupleExpr::create(ctx, lParenLoc, args, argLabels, argLabelLocs,
+                                 rParenLoc, /*hasTrailingClosure=*/false,
+                                 /*implicit=*/false);
+    computeArgType(arg);
+    return new (ctx) CallExpr(fn, arg, implicit);
+  }
+
+  // If we have no other arguments, represent the trailing closure as a
+  // parenthesized expression.
+  if (args.size() == 0) {
+    auto arg = new (ctx) ParenExpr(lParenLoc, trailingClosure, rParenLoc,
+                                   /*hasTrailingClosure=*/true);
+    computeArgType(arg);
+    return new (ctx) CallExpr(fn, arg, implicit);
+  }
+
+  // Form a tuple, including the trailing closure.
+  SmallVector<Expr *, 4> completeArgs;
+  completeArgs.reserve(args.size() + 1);
+  completeArgs.append(args.begin(), args.end());
+  completeArgs.push_back(trailingClosure);
+  auto arg = TupleExpr::create(ctx, lParenLoc, completeArgs, argLabels,
+                               argLabelLocs, rParenLoc,
+                               /*hasTrailingClosure=*/true,
+                               /*implicit=*/false);
+  computeArgType(arg);
+  return new (ctx) CallExpr(fn, arg, implicit);
+}
+
+Expr *CallExpr::getDirectCallee() const {
+  auto fn = getFn();
+  while (true) {
+    fn = fn->getSemanticsProvidingExpr();
+
+    if (auto force = dyn_cast<ForceValueExpr>(fn)) {
+      fn = force->getSubExpr();
+      continue;
+    }
+
+    if (auto bind = dyn_cast<BindOptionalExpr>(fn)) {
+      fn = bind->getSubExpr();
+      continue;
+    }
+
+    return fn;
+  }
 }
 
 RebindSelfInConstructorExpr::RebindSelfInConstructorExpr(Expr *SubExpr,
@@ -1205,4 +1568,44 @@ ArchetypeType *OpenExistentialExpr::getOpenedArchetype() const {
   while (auto metaTy = type->getAs<MetatypeType>())
     type = metaTy->getInstanceType();
   return type->castTo<ArchetypeType>();
+}
+
+ObjCKeyPathExpr::ObjCKeyPathExpr(SourceLoc keywordLoc, SourceLoc lParenLoc,
+                         ArrayRef<Identifier> names,
+                         ArrayRef<SourceLoc> nameLocs,
+                         SourceLoc rParenLoc)
+  : Expr(ExprKind::ObjCKeyPath, /*Implicit=*/nameLocs.empty()),
+    KeywordLoc(keywordLoc), LParenLoc(lParenLoc), RParenLoc(rParenLoc)
+{
+  // Copy components (which are all names).
+  ObjCKeyPathExprBits.NumComponents = names.size();
+  for (auto idx : indices(names))
+    getComponentsMutable()[idx] = names[idx];
+
+  assert(nameLocs.empty() || nameLocs.size() == names.size());
+  ObjCKeyPathExprBits.HaveSourceLocations = !nameLocs.empty();
+  if (ObjCKeyPathExprBits.HaveSourceLocations) {
+    memcpy(getNameLocsMutable().data(), nameLocs.data(),
+           nameLocs.size() * sizeof(SourceLoc));
+  }
+}
+
+Identifier ObjCKeyPathExpr::getComponentName(unsigned i) const {
+  if (auto decl = getComponentDecl(i))
+    return decl->getFullName().getBaseName();
+
+  return getComponents()[i].get<Identifier>();
+}
+
+ObjCKeyPathExpr *ObjCKeyPathExpr::create(ASTContext &ctx,
+                                 SourceLoc keywordLoc, SourceLoc lParenLoc,
+                                 ArrayRef<Identifier> names,
+                                 ArrayRef<SourceLoc> nameLocs,
+                                 SourceLoc rParenLoc) {
+  unsigned size = sizeof(ObjCKeyPathExpr)
+    + names.size() * sizeof(Identifier)
+    + nameLocs.size() * sizeof(SourceLoc);
+  void *mem = ctx.Allocate(size, alignof(ObjCKeyPathExpr));
+  return new (mem) ObjCKeyPathExpr(keywordLoc, lParenLoc, names, nameLocs,
+                                   rParenLoc);
 }

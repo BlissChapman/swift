@@ -120,13 +120,16 @@ public struct Mirror {
   /// might write:
   ///
   ///     if let b = AnyBidirectionalCollection(someMirror.children) {
-  ///       for i in b.endIndex.advanced(by: -20, limit: b.startIndex)..<b.endIndex {
+  ///       var i = xs.index(b.endIndex, offsetBy: -20,
+  ///         limitedBy: b.startIndex) ?? b.startIndex
+  ///       while i != xs.endIndex {
   ///          print(b[i])
+  ///          b.formIndex(after: &i)
   ///       }
   ///     }
-  public typealias Children = AnyForwardCollection<Child>
+  public typealias Children = AnyCollection<Child>
 
-  /// A suggestion of how a `Mirror`'s is to be interpreted.
+  /// A suggestion of how a `Mirror`'s `subject` is to be interpreted.
   ///
   /// Playgrounds and the debugger will show a representation similar
   /// to the one used for instances of the kind indicated by the
@@ -136,14 +139,12 @@ public struct Mirror {
     case dictionary, `set`
   }
 
-  @warn_unused_result
   static func _noSuperclassMirror() -> Mirror? { return nil }
 
   /// Returns the legacy mirror representing the part of `subject`
   /// corresponding to the superclass of `staticSubclass`.
-  @warn_unused_result
   internal static func _legacyMirror(
-    subject: AnyObject, asClass targetSuperclass: AnyClass) -> _Mirror? {
+    _ subject: AnyObject, asClass targetSuperclass: AnyClass) -> _Mirror? {
     
     // get a legacy mirror and the most-derived type
     var cls: AnyClass = subject.dynamicType
@@ -161,9 +162,8 @@ public struct Mirror {
     return nil
   }
   
-  @warn_unused_result
-  internal static func _superclassIterator<Subject : Any>(
-    subject: Subject, _ ancestorRepresentation: AncestorRepresentation
+  internal static func _superclassIterator<Subject>(
+    _ subject: Subject, _ ancestorRepresentation: AncestorRepresentation
   ) -> () -> Mirror? {
 
     if let subject = subject as? AnyObject,
@@ -208,14 +208,28 @@ public struct Mirror {
   /// `Mirror`'s `children` may be upgraded later.  See the failable
   /// initializers of `AnyBidirectionalCollection` and
   /// `AnyRandomAccessCollection` for details.
-  public init<
-    Subject, C : Collection where C.Iterator.Element == Child
-  >(
+  public init<Subject, C : Collection>(
     _ subject: Subject,
     children: C,
     displayStyle: DisplayStyle? = nil,
     ancestorRepresentation: AncestorRepresentation = .generated
-  ) {
+  ) where
+    C.Iterator.Element == Child,
+    // FIXME(ABI)(compiler limitation): these constraints should be applied to
+    // associated types of Collection.
+    C.SubSequence : Collection,
+    C.SubSequence.Iterator.Element == Child,
+    C.SubSequence.Index == C.Index,
+    C.SubSequence.Indices : Collection,
+    C.SubSequence.Indices.Iterator.Element == C.Index,
+    C.SubSequence.Indices.Index == C.Index,
+    C.SubSequence.Indices.SubSequence == C.SubSequence.Indices,
+    C.SubSequence.SubSequence == C.SubSequence,
+    C.Indices : Collection,
+    C.Indices.Iterator.Element == C.Index,
+    C.Indices.Index == C.Index,
+    C.Indices.SubSequence == C.Indices {
+
     self.subjectType = Subject.self
     self._makeSuperclassMirror = Mirror._superclassIterator(
       subject, ancestorRepresentation)
@@ -256,14 +270,21 @@ public struct Mirror {
   /// `Mirror`'s `children` may be upgraded later.  See the failable
   /// initializers of `AnyBidirectionalCollection` and
   /// `AnyRandomAccessCollection` for details.
-  public init<
-    Subject, C: Collection
-  >(
+  public init<Subject, C : Collection>(
     _ subject: Subject,
     unlabeledChildren: C,
     displayStyle: DisplayStyle? = nil,
     ancestorRepresentation: AncestorRepresentation = .generated
-  ) {
+  ) where
+    // FIXME(ABI)(compiler limitation): these constraints should be applied to
+    // associated types of Collection.
+    C.SubSequence : Collection,
+    C.SubSequence.SubSequence == C.SubSequence,
+    C.Indices : Collection,
+    C.Indices.Iterator.Element == C.Index,
+    C.Indices.Index == C.Index,
+    C.Indices.SubSequence == C.Indices {
+
     self.subjectType = Subject.self
     self._makeSuperclassMirror = Mirror._superclassIterator(
       subject, ancestorRepresentation)
@@ -338,22 +359,22 @@ public struct Mirror {
   internal let _defaultDescendantRepresentation: _DefaultDescendantRepresentation
 }
 
-/// A type that explicitly supplies its own Mirror.
+/// A type that explicitly supplies its own mirror.
 ///
-/// Instances of any type can be `Mirror(reflect:)`'ed upon, but if you are
-/// not satisfied with the `Mirror` supplied for your type by default,
-/// you can make it conform to `CustomReflectable` and return a custom
-/// `Mirror`.
+/// You can create a mirror for any type using the `Mirror(reflect:)`
+/// initializer, but if you are not satisfied with the mirror supplied for
+/// your type by default, you can make it conform to `CustomReflectable` and
+/// return a custom `Mirror` instance.
 public protocol CustomReflectable {
-  /// The `Mirror` for `self`.
+  /// The custom mirror for this instance.
   ///
-  /// - Note: If `Self` has value semantics, the `Mirror` should be
-  ///   unaffected by subsequent mutations of `self`.
+  /// If this type has value semantics, the mirror should be unaffected by
+  /// subsequent mutations of the instance.
   var customMirror: Mirror { get }
 }
 
-/// A type that explicitly supplies its own Mirror but whose
-/// descendant classes are not represented in the Mirror unless they
+/// A type that explicitly supplies its own mirror, but whose
+/// descendant classes are not represented in the mirror unless they
 /// also override `customMirror`.
 public protocol CustomLeafReflectable : CustomReflectable {}
 
@@ -382,25 +403,27 @@ extension Mirror {
   /// A `String` argument selects the first `Child` with a matching label.
   /// An integer argument *n* select the *n*th `Child`.  For example:
   ///
-  ///   var d = Mirror(reflecting: x).descendant(1, "two", 3)
+  ///     var d = Mirror(reflecting: x).descendant(1, "two", 3)
   ///
   /// is equivalent to:
   ///
   ///     var d = nil
   ///     let children = Mirror(reflecting: x).children
-  ///     let p0 = children.startIndex.advanced(by: 1, limit: children.endIndex)
-  ///     if p0 != children.endIndex {
+  ///     if let p0 = children.index(children.startIndex,
+  ///       offsetBy: 1, limitedBy: children.endIndex) {
   ///       let grandChildren = Mirror(reflecting: children[p0].value).children
   ///       SeekTwo: for g in grandChildren {
   ///         if g.label == "two" {
   ///           let greatGrandChildren = Mirror(reflecting: g.value).children
-  ///           let p1 = greatGrandChildren.startIndex.advanced(
-  ///             by: 3,
-  ///             limit: greatGrandChildren.endIndex)
-  ///           if p1 != endIndex { d = greatGrandChildren[p1].value }
+  ///           if let p1 = greatGrandChildren.index(
+  ///             greatGrandChildren.startIndex,
+  ///             offsetBy: 3, limitedBy: greatGrandChildren.endIndex) {
+  ///             d = greatGrandChildren[p1].value
+  ///           }
   ///           break SeekTwo
   ///         }
   ///       }
+  ///     }
   ///
   /// As you can see, complexity for each element of the argument list
   /// depends on the argument type and capabilities of the collection
@@ -409,9 +432,8 @@ extension Mirror {
   /// this function is suitable for exploring the structure of a
   /// `Mirror` in a REPL or playground, but don't expect it to be
   /// efficient.
-  @warn_unused_result
   public func descendant(
-    first: MirrorPath, _ rest: MirrorPath...
+    _ first: MirrorPath, _ rest: MirrorPath...
   ) -> Any? {
     var result: Any = _Dummy(mirror: self)
     for e in [first] + rest {
@@ -421,8 +443,9 @@ extension Mirror {
         position = children.index { $0.label == label } ?? children.endIndex
       }
       else if let offset = (e as? Int).map({ IntMax($0) }) ?? (e as? IntMax) {
-        position = children.startIndex.advanced(
-          by: offset, limit: children.endIndex)
+        position = children.index(children.startIndex,
+          offsetBy: offset,
+          limitedBy: children.endIndex) ?? children.endIndex
       }
       else {
         _preconditionFailure(
@@ -455,8 +478,7 @@ extension Mirror.DisplayStyle {
   }
 }
 
-@warn_unused_result
-internal func _isClassSuperMirror(t: Any.Type) -> Bool {
+internal func _isClassSuperMirror(_ t: Any.Type) -> Bool {
 #if  _runtime(_ObjC)
   return t == _ClassSuperMirror.self || t == _ObjCSuperMirror.self
 #else
@@ -465,7 +487,6 @@ internal func _isClassSuperMirror(t: Any.Type) -> Bool {
 }
 
 extension _Mirror {
-  @warn_unused_result
   internal func _superMirror() -> _Mirror? {
     if self.count > 0 {
       let childMirror = self[0].1
@@ -490,7 +511,9 @@ internal extension Mirror {
   /// appropriate for random access!  To avoid this pitfall, convert
   /// mirrors to use the new style, which only present forward
   /// traversal in general.
-  internal struct LegacyChildren : Collection {
+  internal struct LegacyChildren : RandomAccessCollection {
+    typealias Indices = CountableRange<Int>
+    
     init(_ oldMirror: _Mirror) {
       self._oldMirror = oldMirror
     }
@@ -573,15 +596,6 @@ internal extension Mirror {
 
 /// The sum of types that can be used as a quick look representation.
 public enum PlaygroundQuickLook {
-  //
-  // This type must be binary-compatible with the 'PlaygroundQuickLook' struct
-  // in stdlib/public/runtime/Reflection.mm, and 'PlaygroundQuickLook?' must be
-  // binary compatible with 'OptionalPlaygroundQuickLook' from the same.
-  //
-  // NB: This type is somewhat carefully laid out to *suppress* enum layout
-  // optimization so that it is easier to manufacture in the C++ runtime
-  // implementation.
-
   /// Plain text.
   case text(String)
 
@@ -669,6 +683,9 @@ extension PlaygroundQuickLook {
     if let customized = subject as? CustomPlaygroundQuickLookable {
       self = customized.customPlaygroundQuickLook
     }
+    else if let customized = subject as? _DefaultCustomPlaygroundQuickLookable {
+      self = customized._defaultCustomPlaygroundQuickLook
+    }
     else {
       if let q = _reflect(subject).quickLookObject {
         self = q
@@ -688,37 +705,91 @@ extension PlaygroundQuickLook {
 /// `CustomPlaygroundQuickLookable` and return a custom
 /// `PlaygroundQuickLook`.
 public protocol CustomPlaygroundQuickLookable {
-  /// The `PlaygroundQuickLook` for `self`.
+  /// A custom playground quick look for this instance.
   ///
-  /// - Note: If `Self` has value semantics, the `PlaygroundQuickLook`
-  ///   should be unaffected by subsequent mutations of `self`.
+  /// If this type has value semantics, the `PlaygroundQuickLook` instance
+  /// should be unaffected by subsequent mutations.
   var customPlaygroundQuickLook: PlaygroundQuickLook { get }
+}
+
+
+// A workaround for <rdar://problem/25971264>
+// FIXME(ABI)
+public protocol _DefaultCustomPlaygroundQuickLookable {
+  var _defaultCustomPlaygroundQuickLook: PlaygroundQuickLook { get }
 }
 
 //===--- General Utilities ------------------------------------------------===//
 // This component could stand alone, but is used in Mirror's public interface.
 
-/// Represent the ability to pass a dictionary literal in function
-/// signatures.
+/// A lightweight collection of key-value pairs.
 ///
-/// A function with a `DictionaryLiteral` parameter can be passed a
-/// Swift dictionary literal without causing a `Dictionary` to be
-/// created.  This capability can be especially important when the
-/// order of elements in the literal is significant.
+/// Use a `DictionaryLiteral` instance when you need an ordered collection of
+/// key-value pairs and don't require the fast key lookup that the
+/// `Dictionary` type provides. Unlike key-value pairs in a true dictionary,
+/// neither the key nor the value of a `DictionaryLiteral` instance must
+/// conform to the `Hashable` protocol.
 ///
-/// For example:
+/// You initialize a `DictionaryLiteral` instance using a Swift dictionary
+/// literal. Besides maintaining the order of the original dictionary literal,
+/// `DictionaryLiteral` also allows duplicates keys. For example:
+///
+///     let recordTimes: DictionaryLiteral = ["Florence Griffith-Joyner": 10.49,
+///                                           "Evelyn Ashford": 10.76,
+///                                           "Evelyn Ashford": 10.79,
+///                                           "Marlies Gohr": 10.81]
+///     print(recordTimes.first!)
+///     // Prints "("Florence Griffith-Joyner", 10.49)"
+///
+/// Some operations that are efficient on a dictionary are slower when using
+/// `DictionaryLiteral`. In particular, to find the value matching a key, you
+/// must search through every element of the collection. The call to
+/// `index(where:)` in the following example must traverse the whole
+/// collection to make sure that no element matches the given predicate:
+///
+///     let runner = "Marlies Gohr"
+///     if let index = recordTimes.index(where: { $0.0 == runner }) {
+///         let time = recordTimes[index].1
+///         print("\(runner) set a 100m record of \(time) seconds.")
+///     } else {
+///         print("\(runner) couldn't be found in the records.")
+///     }
+///     // Prints "Marlies Gohr set a 100m record of 10.81 seconds."
+///
+/// Dictionary Literals as Function Parameters
+/// ------------------------------------------
+///
+/// When calling a function with a `DictionaryLiteral` parameter, you can pass
+/// a Swift dictionary literal without causing a `Dictionary` to be created.
+/// This capability can be especially important when the order of elements in
+/// the literal is significant.
+///
+/// For example, you could create an `IntPairs` structure that holds a list of
+/// two-integer tuples and use an initializer that accepts a
+/// `DictionaryLiteral` instance.
 ///
 ///     struct IntPairs {
-///       var elements: [(Int, Int)]
-///       init(_ pairs: DictionaryLiteral<Int,Int>) {
-///         elements = Array(pairs)
-///       }
+///         var elements: [(Int, Int)]
+///
+///         init(_ elements: DictionaryLiteral<Int, Int>) {
+///             self.elements = Array(elements)
+///         }
 ///     }
 ///
-///     let x = IntPairs([1:2, 1:1, 3:4, 2:1])
-///     print(x.elements)  // [(1, 2), (1, 1), (3, 4), (2, 1)]
-public struct DictionaryLiteral<Key, Value> : DictionaryLiteralConvertible {
-  /// Store `elements`.
+/// When you're ready to create a new `IntPairs` instance, use a dictionary
+/// literal as the parameter to the `IntPairs` initializer. The
+/// `DictionaryLiteral` instance preserves the order of the elements as
+/// passed.
+///
+///     let pairs = IntPairs([1: 2, 1: 1, 3: 4, 2: 1])
+///     print(pairs.elements)
+///     // Prints "[(1, 2), (1, 1), (3, 4), (2, 1)]"
+public struct DictionaryLiteral<Key, Value> : ExpressibleByDictionaryLiteral {
+  /// Creates a new `DictionaryLiteral` instance from the given dictionary
+  /// literal.
+  ///
+  /// The order of the key-value pairs is kept intact in the resulting
+  /// `DictionaryLiteral` instance.
   public init(dictionaryLiteral elements: (Key, Value)...) {
     self._elements = elements
   }
@@ -727,47 +798,77 @@ public struct DictionaryLiteral<Key, Value> : DictionaryLiteralConvertible {
 
 /// `Collection` conformance that allows `DictionaryLiteral` to
 /// interoperate with the rest of the standard library.
-extension DictionaryLiteral : Collection {
-  /// The position of the first element in a non-empty `DictionaryLiteral`.
+extension DictionaryLiteral : RandomAccessCollection {
+  public typealias Indices = CountableRange<Int>
+  
+  /// The position of the first element in a nonempty collection.
   ///
-  /// Identical to `endIndex` in an empty `DictionaryLiteral`.
-  ///
-  /// - Complexity: O(1).
+  /// If the `DictionaryLiteral` instance is empty, `startIndex` is equal to
+  /// `endIndex`.
   public var startIndex: Int { return 0 }
 
-  /// The `DictionaryLiteral`'s "past the end" position.
+  /// The collection's "past the end" position---that is, the position one
+  /// greater than the last valid subscript argument.
   ///
-  /// `endIndex` is not a valid argument to `subscript`, and is always
-  /// reachable from `startIndex` by zero or more applications of
-  /// `successor()`.
-  ///
-  /// - Complexity: O(1).
+  /// If the `DictionaryLiteral` instance is empty, `endIndex` is equal to
+  /// `startIndex`.
   public var endIndex: Int { return _elements.endIndex }
 
   // FIXME: a typealias is needed to prevent <rdar://20248032>
+  /// The element type of a `DictionaryLiteral`: a tuple containing an
+  /// individual key-value pair.
   public typealias Element = (key: Key, value: Value)
 
-  /// Access the element indicated by `position`.
+  /// Accesses the element at the specified position.
   ///
-  /// - Precondition: `position >= 0 && position < endIndex`.
-  ///
-  /// - complexity: O(1).
+  /// - Parameter position: The position of the element to access. `position`
+  ///   must be a valid index of the collection that is not equal to the
+  ///   `endIndex` property.
+  /// - Returns: The key-value pair at position `position`.
   public subscript(position: Int) -> Element {
     return _elements[position]
   }
 }
 
 extension String {
-  /// Initialize `self` with the textual representation of `instance`.
+  /// Creates a string representing the given value.
   ///
-  /// * If `Subject` conforms to `Streamable`, the result is obtained by
-  ///   calling `instance.write(to: s)` on an empty string `s`.
-  /// * Otherwise, if `Subject` conforms to `CustomStringConvertible`, the
-  ///   result is `instance`'s `description`
-  /// * Otherwise, if `Subject` conforms to `CustomDebugStringConvertible`,
-  ///   the result is `instance`'s `debugDescription`
-  /// * Otherwise, an unspecified result is supplied automatically by
-  ///   the Swift standard library.
+  /// Use this initializer to convert an instance of any type to its preferred
+  /// representation as a `String` instance. The initializer creates the
+  /// string representation of `instance` in one of the following ways,
+  /// depending on its protocol conformance:
+  ///
+  /// - If `instance` conforms to the `Streamable` protocol, the result is
+  ///   obtained by calling `instance.write(to: s)` on an empty string `s`.
+  /// - If `instance` conforms to the `CustomStringConvertible` protocol, the
+  ///   result is `instance.description`.
+  /// - If `instance` conforms to the `CustomDebugStringConvertible` protocol,
+  ///   the result is `instance.debugDescription`.
+  /// - An unspecified result is supplied automatically by the Swift standard
+  ///   library.
+  ///
+  /// For example, this custom `Point` struct uses the default representation
+  /// supplied by the standard library.
+  ///
+  ///     struct Point {
+  ///         let x: Int, y: Int
+  ///     }
+  ///
+  ///     let p = Point(x: 21, y: 30)
+  ///     print(String(p))
+  ///     // Prints "Point(x: 21, y: 30)"
+  ///
+  /// After adding `CustomStringConvertible` conformance by implementing the
+  /// `description` property, `Point` provides its own custom representation.
+  ///
+  ///     extension Point: CustomStringConvertible {
+  ///         var description: String {
+  ///             return "(\(x), \(y))"
+  ///         }
+  ///     }
+  ///
+  ///     print(String(p))
+  ///     // Prints "(21, 30)"
   ///
   /// - SeeAlso: `String.init<Subject>(reflecting: Subject)`
   public init<Subject>(_ instance: Subject) {
@@ -775,20 +876,49 @@ extension String {
     _print_unlocked(instance, &self)
   }
 
-  /// Initialize `self` with a detailed textual representation of
-  /// `subject`, suitable for debugging.
+  /// Creates a string with a detailed representation of the given value,
+  /// suitable for debugging.
   ///
-  /// * If `Subject` conforms to `CustomDebugStringConvertible`, the result
-  ///   is `subject`'s `debugDescription`.
+  /// Use this initializer to convert an instance of any type to its custom
+  /// debugging representation. The initializer creates the string
+  /// representation of `instance` in one of the following ways, depending on
+  /// its protocol conformance:
   ///
-  /// * Otherwise, if `Subject` conforms to `CustomStringConvertible`,
-  ///   the result is `subject`'s `description`.
-  ///
-  /// * Otherwise, if `Subject` conforms to `Streamable`, the result is
+  /// - If `subject` conforms to the `CustomDebugStringConvertible` protocol,
+  ///   the result is `subject.debugDescription`.
+  /// - If `subject` conforms to the `CustomStringConvertible` protocol, the
+  ///   result is `subject.description`.
+  /// - If `subject` conforms to the `Streamable` protocol, the result is
   ///   obtained by calling `subject.write(to: s)` on an empty string `s`.
+  /// - An unspecified result is supplied automatically by the Swift standard
+  ///   library.
   ///
-  /// * Otherwise, an unspecified result is supplied automatically by
-  ///   the Swift standard library.
+  /// For example, this custom `Point` struct uses the default representation
+  /// supplied by the standard library.
+  ///
+  ///     struct Point {
+  ///         let x: Int, y: Int
+  ///     }
+  ///
+  ///     let p = Point(x: 21, y: 30)
+  ///     print(String(reflecting: p))
+  ///     // Prints "p: Point = {
+  ///     //           x = 21
+  ///     //           y = 30
+  ///     //         }"
+  ///
+  /// After adding `CustomDebugStringConvertible` conformance by implementing
+  /// the `debugDescription` property, `Point` provides its own custom
+  /// debugging representation.
+  ///
+  ///     extension Point: CustomDebugStringConvertible {
+  ///         var debugDescription: String {
+  ///             return "Point(x: \(x), y: \(y))"
+  ///         }
+  ///     }
+  ///
+  ///     print(String(reflecting: p))
+  ///     // Prints "Point(x: 21, y: 30)"
   ///
   /// - SeeAlso: `String.init<Subject>(Subject)`
   public init<Subject>(reflecting subject: Subject) {

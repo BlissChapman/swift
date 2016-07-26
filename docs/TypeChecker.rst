@@ -22,11 +22,11 @@ parametric polymorphism. Swift makes extensive use of type inference,
 allowing one to omit the types of many variables and expressions. For
 example::
 
-  func round(x: Double) -> Int { /* ... */ }
+  func round(_ x: Double) -> Int { /* ... */ }
   var pi: Double = 3.14159
   var three = round(pi) // 'three' has type 'Int'
 
-  func identity<T>(x: T) -> T { return x }
+  func identity<T>(_ x: T) -> T { return x }
   var eFloat: Float = -identity(2.71828)  // numeric literal gets type 'Float'
 
 Swift's type inference allows type information to flow in two
@@ -336,8 +336,8 @@ Overloading is the process of giving multiple, different definitions
 to the same name. For example, we might overload a ``negate`` function
 to work on both ``Int`` and ``Double`` types, e.g.::
 
-  func negate(x: Int) -> Int { return -x }
-  func negate(x: Double) -> Double { return -x }
+  func negate(_ x: Int) -> Int { return -x }
+  func negate(_ x: Double) -> Double { return -x }
 
 Given that there are two definitions of ``negate``, what is the type
 of the declaration reference expression ``negate``? If one selects the
@@ -608,7 +608,7 @@ types formed by the conversion relationship, e.g., there is an edge
 ``A -> B`` in the latter if ``A`` is convertible to ``B``. ``B`` would
 therefore be higher in the lattice than ``A``, and the topmost element
 of the lattice is the element to which all types can be converted,
-``protocol<>`` (often called "top"). 
+``Any`` (often called "top").
 
 The concrete types "above" and "below" a given type variable provide
 bounds on the possible concrete types that can be assigned to that
@@ -638,7 +638,7 @@ can be converted [#]_.
 Default Literal Types
 ..........................................
 If a type variable is bound by a conformance constraint to one of the
-literal protocols, "``T0`` conforms to ``IntegerLiteralConvertible``",
+literal protocols, "``T0`` conforms to ``ExpressibleByIntegerLiteral``",
 then the constraint solver will guess that the type variable can be
 bound to the default literal type for that protocol. For example,
 ``T0`` would get the default integer literal type ``Int``, allowing
@@ -730,7 +730,7 @@ checking problem::
     func [conversion] __conversion () -> Int { /* ... */ }
   }
 
-  func f(i : Int, s : String) { }
+  func f(_ i : Int, s : String) { }
 
   var x : X
   f(10.5, x)
@@ -738,18 +738,18 @@ checking problem::
 This constraint system generates the constraints "``T(f)`` ==Fn ``T0
 -> T1``" (for fresh variables ``T0`` and ``T1``), "``(T2, X) <c
 T0``" (for fresh variable ``T2``) and "``T2`` conforms to
-``FloatLiteralConvertible``". As part of the solution, after ``T0`` is
+``ExpressibleByFloatLiteral``". As part of the solution, after ``T0`` is
 replaced with ``(i : Int, s : String)``, the second of
 these constraints is broken down into "``T2 <c Int``" and "``X <c
 String``". These two constraints are interesting for different
 reasons: the first will fail, because ``Int`` does not conform to
-``FloatLiteralConvertible``. The second will succeed by selecting one
+``ExpressibleByFloatLiteral``. The second will succeed by selecting one
 of the (overloaded) conversion functions.
 
 In both of these cases, we need to map the actual constraint of
 interest back to the expressions they refer to. In the first case, we
 want to report not only that the failure occurred because ``Int`` is
-not ``FloatLiteralConvertible``, but we also want to point out where
+not ``ExpressibleByFloatLiteral``, but we also want to point out where
 the ``Int`` type actually came from, i.e., in the parameter. In the
 second case, we want to determine which of the overloaded conversion
 functions was selected to perform the conversion, so that conversion
@@ -816,7 +816,7 @@ important decisions made by the solver. However, the locators
 determined by the solver may not directly refer to the most specific
 expression for the purposes of identifying the corresponding source
 location. For example, the failed constraint "``Int`` conforms to
-``FloatLiteralConvertible``" can most specifically by centered on the
+``ExpressibleByFloatLiteral``" can most specifically by centered on the
 floating-point literal ``10.5``, but its locator is::
 
   function application -> apply argument -> tuple element #0
@@ -836,7 +836,7 @@ consider a slight modification to our example, so that the argument to
 ``f`` is provided by another call, we get a different result
 entirely::
 
-  func f(i : Int, s : String) { }
+  func f(_ i : Int, s : String) { }
   func g() -> (f : Float, x : X) { }
 
   f(g())

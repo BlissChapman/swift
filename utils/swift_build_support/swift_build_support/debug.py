@@ -14,29 +14,33 @@
 #
 # ----------------------------------------------------------------------------
 
+from __future__ import absolute_import
 from __future__ import print_function
 
-import subprocess
 import sys
 
-
-def _output(args):
-    try:
-        out = subprocess.check_output(args, stderr=subprocess.PIPE)
-        return out.rstrip()
-    except subprocess.CalledProcessError:
-        return None
+from . import shell
 
 
-def print_xcodebuild_versions(sdks, file=sys.stdout):
+def print_xcodebuild_versions(file=sys.stdout):
     """
     Print the host machine's `xcodebuild` version, as well as version
-    information for each of the given SDKs (for a full list of available
-    SDKs, invoke `xcodebuild -showsdks` on the command line).
+    information for all available SDKs.
     """
-    print(u'--- SDK versions ---', file=file)
-    print(u'{}\n'.format(_output(['xcodebuild', '-version'])), file=file)
-    for sdk in sdks:
-        print(
-            u'{}\n'.format(_output(['xcodebuild', '-version', '-sdk', sdk])),
-            file=file)
+    version = shell.capture(
+        ['xcodebuild', '-version'], dry_run=False, echo=False).rstrip()
+    # Allow non-zero exit codes.  Under certain obscure circumstances
+    # xcodebuild can exit with a non-zero exit code even when the SDK is
+    # usable.
+    sdks = shell.capture(
+        ['xcodebuild', '-version', '-sdk'], dry_run=False, echo=False,
+        allow_non_zero_exit=True).rstrip()
+    fmt = """\
+{version}
+
+--- SDK versions ---
+{sdks}
+
+"""
+    print(fmt.format(version=version, sdks=sdks), file=file)
+    file.flush()

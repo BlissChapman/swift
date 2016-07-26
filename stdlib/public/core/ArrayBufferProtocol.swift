@@ -12,7 +12,11 @@
 
 /// The underlying buffer for an ArrayType conforms to
 /// `_ArrayBufferProtocol`.  This buffer does not provide value semantics.
-public protocol _ArrayBufferProtocol : MutableCollection {
+public protocol _ArrayBufferProtocol
+  : MutableCollection, RandomAccessCollection {
+
+  associatedtype Indices : RandomAccessCollection = CountableRange<Int>
+
   /// The type of elements stored in the buffer.
   associatedtype Element
 
@@ -23,8 +27,9 @@ public protocol _ArrayBufferProtocol : MutableCollection {
   init(_ buffer: _ContiguousArrayBuffer<Element>, shiftedToStartIndex: Int)
 
   /// Copy the elements in `bounds` from this buffer into uninitialized
-  /// memory starting at `target`.  Return a pointer past-the-end of the
+  /// memory starting at `target`.  Return a pointer "past the end" of the
   /// just-initialized memory.
+  @discardableResult
   func _copyContents(
     subRange bounds: Range<Int>,
     initializing target: UnsafeMutablePointer<Element>
@@ -44,9 +49,8 @@ public protocol _ArrayBufferProtocol : MutableCollection {
   /// - Note: This function must remain mutating; otherwise the buffer
   ///   may acquire spurious extra references, which will cause
   ///   unnecessary reallocation.
-  @warn_unused_result
   mutating func requestUniqueMutableBackingBuffer(
-    minimumCapacity minimumCapacity: Int
+    minimumCapacity: Int
   ) -> _ContiguousArrayBuffer<Element>?
 
   /// Returns `true` iff this buffer is backed by a uniquely-referenced mutable
@@ -55,13 +59,11 @@ public protocol _ArrayBufferProtocol : MutableCollection {
   /// - Note: This function must remain mutating; otherwise the buffer
   ///   may acquire spurious extra references, which will cause
   ///   unnecessary reallocation.
-  @warn_unused_result
   mutating func isMutableAndUniquelyReferenced() -> Bool
 
   /// If this buffer is backed by a `_ContiguousArrayBuffer`
   /// containing the same number of elements as `self`, return it.
   /// Otherwise, return `nil`.
-  @warn_unused_result
   func requestNativeBuffer() -> _ContiguousArrayBuffer<Element>?
 
   /// Replace the given `subRange` with the first `newCount` elements of
@@ -69,11 +71,11 @@ public protocol _ArrayBufferProtocol : MutableCollection {
   ///
   /// - Precondition: This buffer is backed by a uniquely-referenced
   /// `_ContiguousArrayBuffer`.
-  mutating func replace<C : Collection where C.Iterator.Element == Element>(
-    subRange subRange: Range<Int>,
+  mutating func replace<C>(
+    subRange: Range<Int>,
     with newCount: Int,
     elementsOf newValues: C
-  )
+  ) where C : Collection, C.Iterator.Element == Element
 
   /// Returns a `_SliceBuffer` containing the elements in `bounds`.
   subscript(bounds: Range<Int>) -> _SliceBuffer<Element> { get }
@@ -82,7 +84,7 @@ public protocol _ArrayBufferProtocol : MutableCollection {
   /// underlying contiguous storage.  If no such storage exists, it is
   /// created on-demand.
   func withUnsafeBufferPointer<R>(
-    @noescape body: (UnsafeBufferPointer<Element>) throws -> R
+    _ body: @noescape (UnsafeBufferPointer<Element>) throws -> R
   ) rethrows -> R
 
   /// Call `body(p)`, where `p` is an `UnsafeMutableBufferPointer`
@@ -90,7 +92,7 @@ public protocol _ArrayBufferProtocol : MutableCollection {
   ///
   /// - Precondition: Such contiguous storage exists or the buffer is empty.
   mutating func withUnsafeMutableBufferPointer<R>(
-    @noescape body: (UnsafeMutableBufferPointer<Element>) throws -> R
+    _ body: @noescape (UnsafeMutableBufferPointer<Element>) throws -> R
   ) rethrows -> R
 
   /// The number of elements the buffer stores.
@@ -102,19 +104,18 @@ public protocol _ArrayBufferProtocol : MutableCollection {
   /// An object that keeps the elements stored in this buffer alive.
   var owner: AnyObject { get }
 
+  /// A pointer to the first element.
+  ///
+  /// - Precondition: The elements are known to be stored contiguously.
+  var firstElementAddress: UnsafeMutablePointer<Element> { get }
+
   /// If the elements are stored contiguously, a pointer to the first
   /// element. Otherwise, `nil`.
-  var firstElementAddress: UnsafeMutablePointer<Element> { get }
+  var firstElementAddressIfContiguous: UnsafeMutablePointer<Element>? { get }
 
   /// Returns a base address to which you can add an index `i` to get the
   /// address of the corresponding element at `i`.
   var subscriptBaseAddress: UnsafeMutablePointer<Element> { get }
-
-  /// Like `subscriptBaseAddress`, but can assume that `self` is a mutable,
-  /// uniquely referenced native representation.
-  /// - Precondition: `_isNative` is `true`.
-  var _unconditionalMutableSubscriptBaseAddress:
-    UnsafeMutablePointer<Element> { get }
 
   /// A value that identifies the storage used by the buffer.  Two
   /// buffers address the same elements when they have the same
@@ -124,23 +125,17 @@ public protocol _ArrayBufferProtocol : MutableCollection {
   var startIndex: Int { get }
 }
 
-extension _ArrayBufferProtocol {
+extension _ArrayBufferProtocol where Index == Int {
+
   public var subscriptBaseAddress: UnsafeMutablePointer<Element> {
     return firstElementAddress
   }
 
-  public var _unconditionalMutableSubscriptBaseAddress:
-    UnsafeMutablePointer<Element> {
-    return subscriptBaseAddress
-  }
-
-  public mutating func replace<
-    C : Collection where C.Iterator.Element == Element
-  >(
-    subRange subRange: Range<Int>,
+  public mutating func replace<C>(
+    subRange: Range<Int>,
     with newCount: Int,
     elementsOf newValues: C
-  ) {
+  ) where C : Collection, C.Iterator.Element == Element {
     _sanityCheck(startIndex == 0, "_SliceBuffer should override this function.")
     let oldCount = self.count
     let eraseCount = subRange.count
@@ -149,40 +144,38 @@ extension _ArrayBufferProtocol {
     self.count = oldCount + growth
 
     let elements = self.subscriptBaseAddress
-    _sanityCheck(elements != nil)
-
-    let oldTailIndex = subRange.endIndex
+    let oldTailIndex = subRange.upperBound
     let oldTailStart = elements + oldTailIndex
     let newTailIndex = oldTailIndex + growth
     let newTailStart = oldTailStart + growth
-    let tailCount = oldCount - subRange.endIndex
+    let tailCount = oldCount - subRange.upperBound
 
     if growth > 0 {
       // Slide the tail part of the buffer forwards, in reverse order
       // so as not to self-clobber.
-      newTailStart.moveInitializeBackwardFrom(oldTailStart, count: tailCount)
+      newTailStart.moveInitialize(from: oldTailStart, count: tailCount)
 
       // Assign over the original subRange
       var i = newValues.startIndex
-      for j in subRange {
+      for j in CountableRange(subRange) {
         elements[j] = newValues[i]
-        i._successorInPlace()
+        newValues.formIndex(after: &i)
       }
       // Initialize the hole left by sliding the tail forward
       for j in oldTailIndex..<newTailIndex {
-        (elements + j).initialize(with: newValues[i])
-        i._successorInPlace()
+        (elements + j).initialize(to: newValues[i])
+        newValues.formIndex(after: &i)
       }
       _expectEnd(i, newValues)
     }
     else { // We're not growing the buffer
       // Assign all the new elements into the start of the subRange
-      var i = subRange.startIndex
+      var i = subRange.lowerBound
       var j = newValues.startIndex
       for _ in 0..<newCount {
         elements[i] = newValues[j]
-        i._successorInPlace()
-        j._successorInPlace()
+        formIndex(after: &i)
+        newValues.formIndex(after: &j)
       }
       _expectEnd(j, newValues)
 
@@ -197,15 +190,15 @@ extension _ArrayBufferProtocol {
 
         // Assign over the rest of the replaced range with the first
         // part of the tail.
-        newTailStart.moveAssignFrom(oldTailStart, count: shrinkage)
+        newTailStart.moveAssign(from: oldTailStart, count: shrinkage)
 
         // Slide the rest of the tail back
-        oldTailStart.moveInitializeFrom(
-          oldTailStart + shrinkage, count: tailCount - shrinkage)
+        oldTailStart.moveInitialize(
+          from: oldTailStart + shrinkage, count: tailCount - shrinkage)
       }
       else {                      // Tail fits within erased elements
         // Assign over the start of the replaced range with the tail
-        newTailStart.moveAssignFrom(oldTailStart, count: tailCount)
+        newTailStart.moveAssign(from: oldTailStart, count: tailCount)
 
         // Destroy elements remaining after the tail in subRange
         (newTailStart + tailCount).deinitialize(

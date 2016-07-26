@@ -16,7 +16,7 @@ private class C : A {
 }
 
 @inline(never)
-private func foo(a: A) -> Int {
+private func foo(_ a: A) -> Int {
 
 
 // Check that a.f() call can be devirtualized, even
@@ -38,8 +38,6 @@ private func foo(a: A) -> Int {
 // CHECK-NOT: class_method
 // CHECK-NOT: function_ref
 // CHECK: return
-
-
 
 print("foo(C()) = \(foo(C()))")
 

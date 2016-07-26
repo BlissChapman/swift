@@ -4,6 +4,8 @@ struct Int {}
 struct Float {}
 struct UnicodeScalar {}
 
+enum Never {}
+
 // Minimal implementation to support varargs.
 struct Array<T> { }
 
@@ -52,11 +54,10 @@ func arg_default_tuple(x x: Int = i, y: Float = f) {}
 arg_default_tuple()
 arg_default_tuple(x:i)
 arg_default_tuple(y:f)
-arg_default_tuple(y:f, x:i)
 arg_default_tuple(x:i, y:f)
 
 
-func variadic_arg_1(x: Int...) {}
+func variadic_arg_1(_ x: Int...) {}
 // CHECK-LABEL: sil hidden @_TFs14variadic_arg_1
 // CHECK: bb0([[X:%[0-9]+]] : $Array<Int>):
 
@@ -65,7 +66,7 @@ variadic_arg_1(i)
 variadic_arg_1(i, i, i)
 
 
-func variadic_arg_2(x: Int, _ y: Float...) {}
+func variadic_arg_2(_ x: Int, _ y: Float...) {}
 // CHECK-LABEL: sil hidden @_TFs14variadic_arg_2
 // CHECK: bb0([[X:%[0-9]+]] : $Int, [[Y:%[0-9]+]] : $Array<Float>):
 
@@ -73,7 +74,7 @@ variadic_arg_2(i)
 variadic_arg_2(i, f)
 variadic_arg_2(i, f, f, f)
 
-func variadic_arg_3(y: Float..., x: Int) {}
+func variadic_arg_3(_ y: Float..., x: Int) {}
 // CHECK-LABEL: sil hidden @_TFs14variadic_arg_3
 // CHECK: bb0([[Y:%[0-9]+]] : $Array<Float>, [[X:%[0-9]+]] : $Int):
 
@@ -85,6 +86,6 @@ protocol Runcible {}
 
 extension Int : Runcible {}
 
-func variadic_address_only_arg(x: Runcible...) {}
+func variadic_address_only_arg(_ x: Runcible...) {}
 
 variadic_address_only_arg(i)

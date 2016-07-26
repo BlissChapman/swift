@@ -91,7 +91,7 @@ void RequirementRepr::dump() const {
 
 Optional<std::tuple<StringRef, StringRef, RequirementReprKind>>
 RequirementRepr::getAsAnalyzedWrittenString() const {
-  if(AsWrittenString.empty())
+  if (AsWrittenString.empty())
     return None;
   auto Pair = AsWrittenString.split("==");
   auto Kind = RequirementReprKind::SameType;
@@ -570,6 +570,9 @@ namespace {
         case Accessibility::Private:
           OS << "private";
           break;
+        case Accessibility::FilePrivate:
+          OS << "fileprivate";
+          break;
         case Accessibility::Internal:
           OS << "internal";
           break;
@@ -737,7 +740,7 @@ namespace {
     
     void printCommonAFD(AbstractFunctionDecl *D, const char *Type) {
       printCommon(D, Type, FuncColor);
-      if (!D->getCaptureInfo().empty()) {
+      if (!D->getCaptureInfo().isTrivial()) {
         OS << " ";
         D->getCaptureInfo().print(OS);
       }
@@ -1473,6 +1476,7 @@ static raw_ostream &operator<<(raw_ostream &os, AccessSemantics accessKind) {
   case AccessSemantics::Ordinary: return os;
   case AccessSemantics::DirectToStorage: return os << " direct_to_storage";
   case AccessSemantics::DirectToAccessor: return os << " direct_to_accessor";
+  case AccessSemantics::BehaviorInitialization: return os << " behavior_init";
   }
   llvm_unreachable("bad access kind");
 }
@@ -1496,6 +1500,15 @@ public:
     Indent -= 2;
   }
 
+  void printRecLabelled(Expr *E, StringRef label) {
+    Indent += 2;
+    OS.indent(Indent);
+    OS << '(' << label << '\n';
+    printRec(E);
+    OS << ')';
+    Indent -= 2;
+  }
+
   /// FIXME: This should use ExprWalker to print children.
 
   void printRec(Decl *D) { D->dump(OS, Indent + 2); }
@@ -1504,6 +1517,9 @@ public:
     PrintPattern(OS, Indent+2).visit(const_cast<Pattern *>(P));
   }
   void printRec(TypeRepr *T);
+  void printRec(ProtocolConformanceRef conf) {
+    conf.dump(OS, Indent + 2);
+  }
 
   static const char *getAccessKindString(AccessKind kind) {
     switch (kind) {
@@ -1620,9 +1636,8 @@ public:
   }
 
   void visitObjectLiteralExpr(ObjectLiteralExpr *E) {
-    printCommon(E, "object_literal")
-      << " name=" << E->getName();
-    OS << '\n';
+    printCommon(E, "object_literal") 
+      << " kind='" << E->getLiteralKindPlainName() << "'\n";
     printRec(E->getArg());
   }
 
@@ -1868,6 +1883,10 @@ public:
   }
   void visitErasureExpr(ErasureExpr *E) {
     printCommon(E, "erasure_expr") << '\n';
+    for (auto conf : E->getConformances()) {
+      printRec(conf);
+      OS << '\n';
+    }
     printRec(E->getSubExpr());
     OS << ')';
   }
@@ -1887,6 +1906,14 @@ public:
       OS << " bridges_to_objc";
     OS << '\n';
     printRec(E->getSubExpr());
+    if (auto keyConversion = E->getKeyConversion()) {
+      OS << '\n';
+      printRecLabelled(keyConversion.Conversion, "key_conversion");
+    }
+    if (auto valueConversion = E->getValueConversion()) {
+      OS << '\n';
+      printRecLabelled(valueConversion.Conversion, "value_conversion");
+    }
     OS << ')';
   }
   void visitDerivedToBaseExpr(DerivedToBaseExpr *E) {
@@ -1949,6 +1976,11 @@ public:
     printRec(E->getSubExpr());
     OS << ')';
   }
+  void visitUnevaluatedInstanceExpr(UnevaluatedInstanceExpr *E) {
+    printCommon(E, "unevaluated_instance") << '\n';
+    printRec(E->getSubExpr());
+    OS << ')';
+  }
 
   void visitInOutExpr(InOutExpr *E) {
     printCommon(E, "inout_expr") << '\n';
@@ -2002,7 +2034,7 @@ public:
   llvm::raw_ostream &printClosure(AbstractClosureExpr *E, char const *name) {
     printCommon(E, name);
     OS << " discriminator=" << E->getDiscriminator();
-    if (!E->getCaptureInfo().empty()) {
+    if (!E->getCaptureInfo().isTrivial()) {
       OS << " ";
       E->getCaptureInfo().print(OS);
     }
@@ -2116,6 +2148,13 @@ public:
   void visitCoerceExpr(CoerceExpr *E) {
     printExplicitCastExpr(E, "coerce_expr");
   }
+  void visitArrowExpr(ArrowExpr *E) {
+    printCommon(E, "arrow") << '\n';
+    printRec(E->getArgsExpr());
+    OS << '\n';
+    printRec(E->getResultExpr());
+    OS << ')';
+  }
   void visitRebindSelfInConstructorExpr(RebindSelfInConstructorExpr *E) {
     printCommon(E, "rebind_self_in_constructor_expr") << '\n';
     printRec(E->getSubExpr());
@@ -2141,6 +2180,12 @@ public:
     OS << '\n';
     printRec(E->getSrc());
     OS << ')';
+  }
+  void visitEnumIsCaseExpr(EnumIsCaseExpr *E) {
+    printCommon(E, "enum_is_case_expr") << ' ' <<
+      E->getEnumElement()->getName() << "\n";
+    printRec(E->getSubExpr());
+    
   }
   void visitUnresolvedPatternExpr(UnresolvedPatternExpr *E) {
     printCommon(E, "unresolved_pattern_expr") << '\n';
@@ -2185,14 +2230,46 @@ public:
     OS << ')';
   }
   void visitObjCSelectorExpr(ObjCSelectorExpr *E) {
-    printCommon(E, "objc_selector_expr") << " decl=";
-    if (auto method = E->getMethod())
+    printCommon(E, "objc_selector_expr");
+    OS << " kind=";
+    switch (E->getSelectorKind()) {
+      case ObjCSelectorExpr::Method:
+        OS << "method";
+        break;
+      case ObjCSelectorExpr::Getter:
+        OS << "getter";
+        break;
+      case ObjCSelectorExpr::Setter:
+        OS << "setter";
+        break;
+    }
+    OS << " decl=";
+    if (auto method = E->getMethod()) {
       method->dumpRef(OS);
-    else
+    } else {
       OS << "<unresolved>";
+    }
     OS << '\n';
     printRec(E->getSubExpr());
     OS << ')';
+  }
+
+  void visitObjCKeyPathExpr(ObjCKeyPathExpr *E) {
+    printCommon(E, "keypath_expr");
+    for (unsigned i = 0, n = E->getNumComponents(); i != n; ++i) {
+      OS << "\n";
+      OS.indent(Indent + 2);
+      OS << "component=";
+      if (auto decl = E->getComponentDecl(i))
+        decl->dumpRef(OS);
+      else
+        OS << E->getComponentName(i);
+    }
+    if (auto semanticE = E->getSemanticExpr()) {
+      OS << '\n';
+      printRec(semanticE);
+    }
+    OS << ")";
   }
 };
 
@@ -2385,32 +2462,30 @@ void TypeRepr::dump() const {
 }
 
 void Substitution::dump() const {
-  llvm::raw_ostream &os = llvm::errs();
+  dump(llvm::errs());
+}
 
-  print(os);
-  os << '\n';
+void Substitution::dump(llvm::raw_ostream &out, unsigned indent) const {
+  out.indent(indent);
+  print(out);
+  out << '\n';
 
-  if (!Conformance.size()) return;
-
-  os << '[';
-  bool first = true;
   for (auto &c : Conformance) {
-    if (first) {
-      first = false;
-    } else {
-      os << ' ';
-    }
-    c.dump();
+    c.dump(out, indent + 2);
   }
-  os << " ]";
 }
 
 void ProtocolConformanceRef::dump() const {
-  llvm::raw_ostream &os = llvm::errs();
+  dump(llvm::errs());
+}
+
+void ProtocolConformanceRef::dump(llvm::raw_ostream &out,
+                                  unsigned indent) const {
   if (isConcrete()) {
-    getConcrete()->printName(os);
+    getConcrete()->dump(out, indent);
   } else {
-    os << "abstract:" << getAbstract()->getName();
+    out.indent(indent) << "(abstract_conformance protocol="
+                       << getAbstract()->getName() << ')';
   }
 }
 
@@ -2423,10 +2498,45 @@ void swift::dump(const ArrayRef<Substitution> &subs) {
 }
 
 void ProtocolConformance::dump() const {
-  // FIXME: If we ever write a full print() method for ProtocolConformance, use
-  // that.
-  printName(llvm::errs());
-  llvm::errs() << '\n';
+  auto &out = llvm::errs();
+  dump(out);
+  out << '\n';
+}
+
+void ProtocolConformance::dump(llvm::raw_ostream &out, unsigned indent) const {
+  auto printCommon = [&](StringRef kind) {
+    out.indent(indent) << '(' << kind << "_conformance type=" << getType()
+                       << " protocol=" << getProtocol()->getName();
+  };
+
+  switch (getKind()) {
+  case ProtocolConformanceKind::Normal:
+    printCommon("normal");
+    // Maybe print information about the conforming context?
+    break;
+
+  case ProtocolConformanceKind::Inherited: {
+    auto conf = cast<InheritedProtocolConformance>(this);
+    printCommon("inherited");
+    out << '\n';
+    conf->getInheritedConformance()->dump(out, indent + 2);
+    break;
+  }
+
+  case ProtocolConformanceKind::Specialized: {
+    auto conf = cast<SpecializedProtocolConformance>(this);
+    printCommon("specialized");
+    out << '\n';
+    for (auto sub : conf->getGenericSubstitutions()) {
+      sub.dump(out, indent + 2);
+      out << '\n';
+    }
+    conf->getGenericConformance()->dump(out, indent + 2);
+    break;
+  }
+  }
+
+  out << ')';
 }
 
 //===----------------------------------------------------------------------===//
@@ -2552,50 +2662,6 @@ namespace {
           printField("name", elt.getName().str());
         if (elt.isVararg())
           printFlag("vararg");
-        switch (elt.getDefaultArgKind()) {
-        case DefaultArgumentKind::None:
-          break;
-
-        case DefaultArgumentKind::Column:
-          printField("default_arg", "#column");
-          break;
-
-        case DefaultArgumentKind::DSOHandle:
-          printField("default_arg", "#dsohandle");
-          break;
-
-        case DefaultArgumentKind::File:
-          printField("default_arg", "#file");
-          break;
-
-        case DefaultArgumentKind::Function:
-          printField("default_arg", "#function");
-          break;
-
-        case DefaultArgumentKind::Inherited:
-          printField("default_arg", "inherited");
-          break;
-
-        case DefaultArgumentKind::Line:
-          printField("default_arg", "#line");
-          break;
-
-        case DefaultArgumentKind::Nil:
-          printField("default_arg", "nil");
-          break;
-
-        case DefaultArgumentKind::EmptyArray:
-          printField("default_arg", "[]");
-          break;
-
-        case DefaultArgumentKind::EmptyDictionary:
-          printField("default_arg", "[:]");
-          break;
-
-        case DefaultArgumentKind::Normal:
-          printField("default_arg", "normal");
-          break;
-        }
 
         printRec(elt.getType());
         OS << ")";
@@ -2806,9 +2872,9 @@ namespace {
         break;
       }
 
-      printFlag(T->isNoReturn(), "noreturn");
       printFlag(T->isAutoClosure(), "autoclosure");
       printFlag(T->isNoEscape(), "noescape");
+      printFlag(T->isExplicitlyEscaping(), "escaping");
       printFlag(T->throws(), "throws");
 
       printRec("input", T->getInput());

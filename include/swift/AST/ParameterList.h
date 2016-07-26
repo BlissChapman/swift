@@ -73,8 +73,18 @@ public:
   /// DeclContext that needs to be set correctly.  This is automatically handled
   /// when a function is created with this as part of its argument list.
   ///
+  static ParameterList *createUnboundSelf(SourceLoc loc, DeclContext *DC,
+                                          bool isStaticMethod = false,
+                                          bool isInOut = false);
+
+  /// Create an implicit 'self' decl for a method in the specified decl context.
+  /// If 'static' is true, then this is self for a static method in the type.
+  ///
+  /// Note that this decl is created, but it is returned with an incorrect
+  /// DeclContext that needs to be set correctly.  This is automatically handled
+  /// when a function is created with this as part of its argument list.
   static ParameterList *createSelf(SourceLoc loc, DeclContext *DC,
-                                   bool isStaticMethod = false,
+                                   bool isStatic = false,
                                    bool isInOut = false);
 
   SourceLoc getLParenLoc() const { return LParenLoc; }
@@ -132,11 +142,14 @@ public:
   /// null type if one of the ParamDecls does not have a type set for it yet.
   Type getType(const ASTContext &C) const;
   
+  /// Return a TupleType or ParenType for this parameter list written in terms
+  /// of interface types.
+  Type getInterfaceType(DeclContext *DC) const;
+
   /// Return the full function type for a set of curried parameter lists that
-  /// returns the specified result type.  This returns a null type if one of the
-  /// ParamDecls does not have a type set for it yet.
-  ///
-  static Type getFullType(Type resultType, ArrayRef<ParameterList*> PL);
+  /// returns the specified result type written in terms of interface types.
+  static Type getFullInterfaceType(Type resultType, ArrayRef<ParameterList*> PL,
+                                   DeclContext *DC);
   
   
   /// Return the full source range of this parameter.

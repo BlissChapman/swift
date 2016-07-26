@@ -21,16 +21,16 @@ func useClassThatTriggersImportOfDeprecatedEnum() {
   // when importing deprecated enums do not themselves trigger deprecation
   // warnings in the synthesized code.
 
-  _ = NSClassWithDeprecatedOptionsInMethodSignature.sharedInstance()
-  _ = NSClassWithExplicitlyUnavailableOptionsInMethodSignature.sharedInstance()
+  _ = ClassWithDeprecatedOptionsInMethodSignature.sharedInstance()
+  _ = ClassWithExplicitlyUnavailableOptionsInMethodSignature.sharedInstance()
 }
 
 func directUseShouldStillTriggerDeprecationWarning() {
-  _ = NSDeprecatedOptions.first // expected-warning {{'NSDeprecatedOptions' was deprecated in OS X 10.51: Use a different API}}
-  _ = NSDeprecatedEnum.first    // expected-warning {{'NSDeprecatedEnum' was deprecated in OS X 10.51: Use a different API}}
+  _ = DeprecatedOptions.first // expected-warning {{'DeprecatedOptions' was deprecated in OS X 10.51: Use a different API}}
+  _ = DeprecatedEnum.first    // expected-warning {{'DeprecatedEnum' was deprecated in OS X 10.51: Use a different API}}
 }
 
-func useInSignature(options: NSDeprecatedOptions) { // expected-warning {{'NSDeprecatedOptions' was deprecated in OS X 10.51: Use a different API}}
+func useInSignature(options: DeprecatedOptions) { // expected-warning {{'DeprecatedOptions' was deprecated in OS X 10.51: Use a different API}}
 }
 
 
@@ -152,18 +152,18 @@ func callMethodInDeprecatedExtension() {
 func functionWithDeprecatedMethodInDeadElseBranch() {
   if #available(iOS 8.0, *) {
   } else {
-    // This branch is dead on OSX, so we shouldn't emit a deprecation warning in it.
+    // This branch is dead on OS X, so we shouldn't emit a deprecation warning in it.
     let _ = ClassDeprecatedIn10_9()  // no-warning
   }
 
-  if #available(OSX 10.9, *) { // expected-warning {{unnecessary check for 'OSX'; minimum deployment target ensures guard will always be true}}
+  if #available(OSX 10.9, *) { // no-warning
   } else {
     // This branch is dead because our minimum deployment target is 10.51.
     let _ = ClassDeprecatedIn10_9()  // no-warning
   }
 
   guard #available(iOS 8.0, *) else {
-    // This branch is dead because our platform is OSX, so the wildcard always matches.
+    // This branch is dead because our platform is OS X, so the wildcard always matches.
     let _ = ClassDeprecatedIn10_9()  // no-warning
   }
 }

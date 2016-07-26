@@ -17,13 +17,14 @@
 #include "swift/Runtime/Enum.h"
 #include "swift/Basic/Demangle.h"
 #include "swift/Runtime/Debug.h"
+#include "swift/Runtime/Portability.h"
 #include "Private.h"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <new>
 #include <string>
-#include <dlfcn.h>
+#include <tuple>
 
 #if SWIFT_OBJC_INTEROP
 #include "swift/Runtime/ObjCBridge.h"
@@ -46,7 +47,7 @@ using namespace swift;
 
 namespace {
   
-/// The layout of protocol<>.
+/// The layout of Any.
 using Any = OpaqueExistentialContainer;
 
 // Swift assumes Any is returned in memory. 
@@ -59,12 +60,6 @@ struct AnyReturn {
   ~AnyReturn() { }
 };
 
-/// A _Reflectable witness table.
-struct _ReflectableWitnessTable {
-  /// func _getMirror() -> Mirror
-  Mirror (*getMirror)(OpaqueValue *self, const Metadata *Self);
-};
-  
 struct MagicMirrorData;
   
 struct String;
@@ -112,92 +107,10 @@ struct String {
   {}
 #endif
 };
-  
-struct Array {
-  // Keep the details of Array's implementation opaque to the runtime.
-  const void *x;
-};
-  
-struct PlaygroundQuickLook {
-  struct RawData {
-    Array Data;
-    String Type;
-  };
-  struct Rectangle {
-    double x, y, w, h;
-  };
-  struct Point {
-    double x, y;
-  };
-  struct Interval {
-    int64_t loc,len;
-  };
-  
-  union {
-    String TextOrURL;
-    int64_t Int;
-    uint64_t UInt;
-    float Float;
-    double Double;
-    Any Any;
-    RawData Raw;
-    Rectangle Rect;
-    Point PointOrSize;
-    bool Logical;
-    Interval Range;
-  };
-  enum class Tag : uint8_t {
-    Text,
-    Int,
-    UInt,
-    Float,
-    Double,
-    Image,
-    Sound,
-    Color,
-    BezierPath,
-    AttributedString,
-    Rectangle,
-    Point,
-    Size,
-    Logical,
-    Range,
-    View,
-    Sprite,
-    URL,
-    Raw,
-  } Kind;
-};
-  
-struct OptionalPlaygroundQuickLook {
-  union {
-    struct {
-      union {
-        String TextOrURL;
-        int64_t Int;
-        uint64_t UInt;
-        float Float;
-        double Double;
-        Any Any;
-        PlaygroundQuickLook::RawData Raw;
-        PlaygroundQuickLook::Rectangle Rect;
-        PlaygroundQuickLook::Point PointOrSize;
-        bool Logical;
-        PlaygroundQuickLook::Interval Range;
-      };
-      PlaygroundQuickLook::Tag Kind;
-      bool isNone;
-    } optional;
-    PlaygroundQuickLook payload;
-  };
-};
-  
+
 /// A Mirror witness table for use by MagicMirror.
 struct MirrorWitnessTable;
-  
-/// The protocol descriptor for _Reflectable from the stdlib.
-extern "C" const ProtocolDescriptor _TMps12_Reflectable;
-  
+
 // This structure needs to mirror _MagicMirrorData in the stdlib.
 struct MagicMirrorData {
   /// The owner pointer for the buffer the value lives in. For class values
@@ -258,7 +171,7 @@ static_assert(offsetof(MagicMirror, MirrorWitness) ==
 #pragma clang diagnostic ignored "-Wreturn-type-c-linkage"
   
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 AnyReturn swift_MagicMirrorData_value(HeapObject *owner,
                                       const OpaqueValue *value,
@@ -271,7 +184,7 @@ AnyReturn swift_MagicMirrorData_value(HeapObject *owner,
 
   return AnyReturn(result);
 }
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 const Metadata *swift_MagicMirrorData_valueType(HeapObject *owner,
                                                 const OpaqueValue *value,
@@ -280,7 +193,7 @@ const Metadata *swift_MagicMirrorData_valueType(HeapObject *owner,
 }
 
 #if SWIFT_OBJC_INTEROP
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 AnyReturn swift_MagicMirrorData_objcValue(HeapObject *owner,
                                           const OpaqueValue *value,
@@ -298,7 +211,7 @@ AnyReturn swift_MagicMirrorData_objcValue(HeapObject *owner,
 
 #pragma clang diagnostic pop
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 const char *swift_OpaqueSummary(const Metadata *T) {
   switch (T->getKind()) {
@@ -331,7 +244,7 @@ const char *swift_OpaqueSummary(const Metadata *T) {
   }
 }
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 void swift_MagicMirrorData_summary(const Metadata *T, String *result) {
   switch (T->getKind()) {
@@ -376,12 +289,12 @@ void swift_MagicMirrorData_summary(const Metadata *T, String *result) {
       new (result) String("(Heap Generic Local Variable)");
       break;
     case MetadataKind::ErrorObject:
-      new (result) String("(ErrorProtocol Object)");
+      new (result) String("(Error Object)");
       break;
   }
 }
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 const Metadata *swift_MagicMirrorData_objcValueType(HeapObject *owner,
                                                     const OpaqueValue *value,
@@ -390,83 +303,26 @@ const Metadata *swift_MagicMirrorData_objcValueType(HeapObject *owner,
   auto isa = _swift_getClass(object);
   return swift_getObjCClassMetadata(isa);
 }
-  
-// -- Tuple destructuring.
-  
-SWIFT_RUNTIME_STDLIB_INTERFACE
-extern "C"
-intptr_t swift_TupleMirror_count(HeapObject *owner,
-                                 const OpaqueValue *value,
-                                 const Metadata *type) {
-  auto Tuple = static_cast<const TupleTypeMetadata *>(type);
-  return Tuple->NumElements;
-}
-  
-static std::tuple<const _ReflectableWitnessTable *, const Metadata *,
-                  const OpaqueValue *>
-getReflectableConformance(const Metadata *T, const OpaqueValue *Value) {
-recur:
+ 
+static std::tuple<const Metadata *, const OpaqueValue *>
+unwrapExistential(const Metadata *T, const OpaqueValue *Value) {
   // If the value is an existential container, look through it to reflect the
   // contained value.
-  switch (T->getKind()) {
-  case MetadataKind::Tuple:
-  case MetadataKind::Struct:
-  case MetadataKind::ForeignClass:
-  case MetadataKind::ObjCClassWrapper:
-  case MetadataKind::Class:
-  case MetadataKind::Opaque:
-  case MetadataKind::Enum:
-  case MetadataKind::Optional:
-  case MetadataKind::Function:
-  case MetadataKind::Metatype:
-    break;
-      
-  case MetadataKind::Existential: {
+  // TODO: Should look through existential metatypes too, but it doesn't
+  // really matter yet since we don't have any special mirror behavior for
+  // concrete metatypes yet.
+  while (T->getKind() == MetadataKind::Existential) {
     auto existential
       = static_cast<const ExistentialTypeMetadata *>(T);
-    
-    // If the existential happens to include the _Reflectable protocol, use
-    // the witness table from the container.
-    unsigned wtOffset = 0;
-    for (unsigned i = 0; i < existential->Protocols.NumProtocols; ++i) {
-      if (existential->Protocols[i] == &_TMps12_Reflectable) {
-        return std::make_tuple(
-            reinterpret_cast<const _ReflectableWitnessTable*>(
-              existential->getWitnessTable(Value, wtOffset)),
-            existential->getDynamicType(Value),
-            existential->projectValue(Value));
-      }
-      if (existential->Protocols[i]->Flags.needsWitnessTable())
-        ++wtOffset;
-    }
-    
-    // Otherwise, unwrap the existential container and do a runtime lookup on
-    // its contained value as usual.
+
+    // Unwrap the existential container.
     T = existential->getDynamicType(Value);
     Value = existential->projectValue(Value);
 
     // Existential containers can end up nested in some cases due to generic
-    // abstraction barriers. Recur in case we have a nested existential.
-    goto recur;
+    // abstraction barriers.  Repeat in case we have a nested existential.
   }
-  case MetadataKind::ExistentialMetatype:
-    // TODO: Should look through existential metatypes too, but it doesn't
-    // really matter yet since we don't have any special mirror behavior for
-    // concrete metatypes yet.
-    break;
-      
-  // Types can't have these kinds.
-  case MetadataKind::HeapLocalVariable:
-  case MetadataKind::HeapGenericLocalVariable:
-  case MetadataKind::ErrorObject:
-    swift::crash("Swift mirror lookup failure");
-  }
-  
-  return std::make_tuple(
-      reinterpret_cast<const _ReflectableWitnessTable*>(
-        swift_conformsToProtocol(T, &_TMps12_Reflectable)),
-      T,
-      Value);
+  return std::make_tuple(T, Value);
 }
 
 /// Produce a mirror for any value, like swift_reflectAny, but do not consume
@@ -478,29 +334,32 @@ recur:
 static Mirror reflect(HeapObject *owner,
                       const OpaqueValue *value,
                       const Metadata *T) {
-  const _ReflectableWitnessTable *witness;
   const Metadata *mirrorType;
   const OpaqueValue *mirrorValue;
-  std::tie(witness, mirrorType, mirrorValue)
-    = getReflectableConformance(T, value);
-  
-  // Use the _Reflectable conformance if the object has one.
-  if (witness) {
-    auto result =
-    witness->getMirror(const_cast<OpaqueValue*>(mirrorValue), mirrorType);
-    swift_release(owner);
-    return MirrorReturn(result);
-  }
-  // Otherwise, fall back to MagicMirror.
+  std::tie(mirrorType, mirrorValue) = unwrapExistential(T, value);
+
+  // Use MagicMirror.
   // Consumes 'owner'.
   Mirror result;
   ::new (&result) MagicMirror(owner, mirrorValue, mirrorType);
   return result;
 }
+
+// -- Tuple destructuring.
   
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
+extern "C"
+intptr_t swift_TupleMirror_count(HeapObject *owner,
+                                 const OpaqueValue *value,
+                                 const Metadata *type) {
+  auto Tuple = static_cast<const TupleTypeMetadata *>(type);
+  swift_release(owner);
+  return Tuple->NumElements;
+}
+
 /// \param owner passed at +1, consumed.
 /// \param value passed unowned.
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 void swift_TupleMirror_subscript(String *outString,
                                  Mirror *outMirror,
@@ -515,17 +374,13 @@ void swift_TupleMirror_subscript(String *outString,
   
   // The name is the stringized element number '.0'.
   char buf[32];
-  snprintf(buf, 31, ".%zd", i);
-  buf[31] = 0;
+  snprintf(buf, sizeof(buf), ".%zd", i);
   new (outString) String(buf, strlen(buf));
   
   // Get a Mirror for the nth element.
   auto &elt = Tuple->getElement(i);
   auto bytes = reinterpret_cast<const char*>(value);
   auto eltData = reinterpret_cast<const OpaqueValue *>(bytes + elt.Offset);
-
-  // This retain matches the -1 in reflect.
-  swift_retain(owner);
 
   // 'owner' is consumed by this call.
   new (outMirror) Mirror(reflect(owner, eltData, elt.Type));
@@ -545,16 +400,17 @@ static const char *getFieldName(const char *fieldNames, size_t i) {
 
 // -- Struct destructuring.
   
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 intptr_t swift_StructMirror_count(HeapObject *owner,
                                   const OpaqueValue *value,
                                   const Metadata *type) {
   auto Struct = static_cast<const StructMetadata *>(type);
+  swift_release(owner);
   return Struct->Description->Struct.NumFields;
 }
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 void swift_StructMirror_subscript(String *outString,
                                   Mirror *outMirror,
@@ -575,9 +431,6 @@ void swift_StructMirror_subscript(String *outString,
   auto fieldData = reinterpret_cast<const OpaqueValue *>(bytes + fieldOffset);
 
   new (outString) String(getFieldName(Struct->Description->Struct.FieldNames, i));
-
-  // This matches the -1 in reflect.
-  swift_retain(owner);
 
   // 'owner' is consumed by this call.
   assert(!fieldType.isIndirect() && "indirect struct fields not implemented");
@@ -630,62 +483,64 @@ static void getEnumMirrorInfo(const OpaqueValue *value,
     *indirectPtr = indirect;
 }
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 const char *swift_EnumMirror_caseName(HeapObject *owner,
                                       const OpaqueValue *value,
                                       const Metadata *type) {
-  if (!isEnumReflectable(type))
+  if (!isEnumReflectable(type)) {
+    swift_release(owner);
     return nullptr;
+  }
 
   const auto Enum = static_cast<const EnumMetadata *>(type);
   const auto &Description = Enum->Description->Enum;
 
   unsigned tag;
   getEnumMirrorInfo(value, type, &tag, nullptr, nullptr);
+
+  swift_release(owner);
+
   return getFieldName(Description.CaseNames, tag);
 }
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 const char *swift_EnumCaseName(OpaqueValue *value, const Metadata *type) {
   // Build a magic mirror. Unconditionally destroy the value at the end.
-  const _ReflectableWitnessTable *witness;
   const Metadata *mirrorType;
   const OpaqueValue *cMirrorValue;
-  std::tie(witness, mirrorType, cMirrorValue) = getReflectableConformance(type, value);
-  
+  std::tie(mirrorType, cMirrorValue) = unwrapExistential(type, value);
+
   OpaqueValue *mirrorValue = const_cast<OpaqueValue*>(cMirrorValue);
   Mirror mirror;
 
-  if (witness) {
-    mirror = witness->getMirror(mirrorValue, mirrorType);
-  } else {
-    bool take = mirrorValue == value;
-    ::new (&mirror) MagicMirror(mirrorValue, mirrorType, take);
-  }
+  bool take = mirrorValue == value;
+  ::new (&mirror) MagicMirror(mirrorValue, mirrorType, take);
 
   MagicMirror *theMirror = reinterpret_cast<MagicMirror *>(&mirror);
   MagicMirrorData data = theMirror->Data;
   const char *result = swift_EnumMirror_caseName(data.Owner, data.Value, data.Type);
-  type->vw_destroy(value);
   return result;
 }
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 intptr_t swift_EnumMirror_count(HeapObject *owner,
                                 const OpaqueValue *value,
                                 const Metadata *type) {
-  if (!isEnumReflectable(type))
+  if (!isEnumReflectable(type)) {
+    swift_release(owner);
     return 0;
+  }
 
   const Metadata *payloadType;
   getEnumMirrorInfo(value, type, nullptr, &payloadType, nullptr);
+  swift_release(owner);
   return (payloadType != nullptr) ? 1 : 0;
 }
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 void swift_EnumMirror_subscript(String *outString,
                                 Mirror *outMirror,
@@ -702,22 +557,27 @@ void swift_EnumMirror_subscript(String *outString,
 
   getEnumMirrorInfo(value, type, &tag, &payloadType, &indirect);
 
-  // Copy the payload since the projection is destructive.
-  BoxPair pair = swift_allocBox(type);
+  // Copy the enum payload into a box
+  const Metadata *boxType = (indirect ? &_TMBo.base : payloadType);
+  BoxPair pair = swift_allocBox(boxType);
+
+  type->vw_destructiveProjectEnumData(const_cast<OpaqueValue *>(value));
+  boxType->vw_initializeWithCopy(pair.second, const_cast<OpaqueValue *>(value));
+  type->vw_destructiveInjectEnumTag(const_cast<OpaqueValue *>(value),
+                                    (int) (tag - Description.getNumPayloadCases()));
+
+  swift_release(owner);
 
   owner = pair.first;
-  type->vw_initializeWithTake(pair.second, const_cast<OpaqueValue *>(value));
-  type->vw_destructiveProjectEnumData(pair.second);
   value = pair.second;
 
   // If the payload is indirect, we need to jump through the box to get it.
   if (indirect) {
     owner = *reinterpret_cast<HeapObject * const *>(value);
     value = swift_projectBox(const_cast<HeapObject *>(owner));
+    swift_retain(owner);
+    swift_release(pair.first);
   }
-
-  // This matches the -1 in reflect.
-  swift_retain(owner);
 
   new (outString) String(getFieldName(Description.CaseNames, tag));
   new (outMirror) Mirror(reflect(owner, value, payloadType));
@@ -729,7 +589,7 @@ static Mirror getMirrorForSuperclass(const ClassMetadata *sup,
                                      const OpaqueValue *value,
                                      const Metadata *type);
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 intptr_t swift_ClassMirror_count(HeapObject *owner,
                                  const OpaqueValue *value,
@@ -748,7 +608,7 @@ intptr_t swift_ClassMirror_count(HeapObject *owner,
 
 /// \param owner passed at +1, consumed.
 /// \param value passed unowned.
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 void swift_ClassMirror_subscript(String *outString,
                                  Mirror *outMirror,
@@ -869,7 +729,7 @@ static const Metadata *getMetadataForEncoding(const char *encoding) {
 
 /// \param owner passed at +1, consumed.
 /// \param value passed unowned.
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 intptr_t swift_ObjCMirror_count(HeapObject *owner,
                                 const OpaqueValue *value,
@@ -905,7 +765,7 @@ static Mirror ObjC_getMirrorForSuperclass(Class sup,
                                           const OpaqueValue *value,
                                           const Metadata *type);
   
-SWIFT_RUNTIME_STDLIB_INTERFACE
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
 extern "C"
 void swift_ObjCMirror_subscript(String *outString,
                                 Mirror *outMirror,
@@ -969,101 +829,31 @@ void swift_ObjCMirror_subscript(String *outString,
 #endif
 }
 
-SWIFT_RUNTIME_STDLIB_INTERFACE
-extern "C" OptionalPlaygroundQuickLook
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
+extern "C" id
 swift_ClassMirror_quickLookObject(HeapObject *owner, const OpaqueValue *value,
                                   const Metadata *type) {
-  OptionalPlaygroundQuickLook result;
-  memset(&result, 0, sizeof(result));
-  
   id object = [*reinterpret_cast<const id *>(value) retain];
   swift_release(owner);
   if ([object respondsToSelector:@selector(debugQuickLookObject)]) {
     id quickLookObject = [object debugQuickLookObject];
     [quickLookObject retain];
     [object release];
-    object = quickLookObject;
+    return quickLookObject;
   }
-  
-  // NSNumbers quick-look as integers or doubles, depending on type.
-  if ([object isKindOfClass:[NSNumber class]]) {
-    NSNumber *n = object;
-    
-    switch ([n objCType][0]) {
-    case 'd': // double
-      result.payload.Double = [n doubleValue];
-      result.payload.Kind = PlaygroundQuickLook::Tag::Double;
-      break;
-    case 'f': // float
-      result.payload.Float = [n floatValue];
-      result.payload.Kind = PlaygroundQuickLook::Tag::Float;
-      break;
-        
-    case 'Q': // unsigned long long
-      result.payload.UInt = [n unsignedLongLongValue];
-      result.payload.Kind = PlaygroundQuickLook::Tag::UInt;
-      break;
 
-    // FIXME: decimals?
-    default:
-      result.payload.Int = [n longLongValue];
-      result.payload.Kind = PlaygroundQuickLook::Tag::Int;
-      break;
-    }
-    
-    [object release];
-    result.optional.isNone = false;
-    return result;
-  }
-  
-  // Various other framework types are used for rich representations.
-  
-  /// Store an ObjC reference into an Any.
-  auto initializeAnyWithTakeOfObject = [](Any &any, id obj) {
-    any.Type = swift_getObjCClassMetadata(_swift_getClass((const void*) obj));
-    *reinterpret_cast<id *>(&any.Buffer) = obj;
-  };
-  
-  if ([object isKindOfClass:NSClassFromString(@"NSAttributedString")]) {
-    initializeAnyWithTakeOfObject(result.payload.Any, object);
-    result.payload.Kind = PlaygroundQuickLook::Tag::AttributedString;
-    result.optional.isNone = false;
-    return result;
-  } else if ([object isKindOfClass:NSClassFromString(@"NSImage")]
-      || [object isKindOfClass:NSClassFromString(@"UIImage")]
-      || [object isKindOfClass:NSClassFromString(@"NSImageView")]
-      || [object isKindOfClass:NSClassFromString(@"UIImageView")]
-      || [object isKindOfClass:NSClassFromString(@"CIImage")]
-      || [object isKindOfClass:NSClassFromString(@"NSBitmapImageRep")]) {
-    initializeAnyWithTakeOfObject(result.payload.Any, object);
-    result.payload.Kind = PlaygroundQuickLook::Tag::Image;
-    result.optional.isNone = false;
-    return result;
-  } else if ([object isKindOfClass:NSClassFromString(@"NSColor")]
-             || [object isKindOfClass:NSClassFromString(@"UIColor")]) {
-    initializeAnyWithTakeOfObject(result.payload.Any, object);
-    result.payload.Kind = PlaygroundQuickLook::Tag::Color;
-    result.optional.isNone = false;
-    return result;
-  } else if ([object isKindOfClass:NSClassFromString(@"NSBezierPath")]
-             || [object isKindOfClass:NSClassFromString(@"UIBezierPath")]) {
-    initializeAnyWithTakeOfObject(result.payload.Any, object);
-    result.payload.Kind = PlaygroundQuickLook::Tag::BezierPath;
-    result.optional.isNone = false;
-    return result;
-  } else if ([object isKindOfClass:[NSString class]]) {
-    result.payload.TextOrURL = String((NSString*)object);
-    [object release];
-    result.payload.Kind = PlaygroundQuickLook::Tag::Text;
-    result.optional.isNone = false;
-    return result;
-  }
-  
-  // Return none if we didn't get a suitable object.
+  return object;
+}
+
+SWIFT_CC(swift) SWIFT_RUNTIME_STDLIB_INTERFACE
+extern "C" bool swift_isKind(id object, NSString *className) {
+  bool result = [object isKindOfClass:NSClassFromString(className)];
   [object release];
-  result.optional.isNone = true;
+  [className release];
+
   return result;
 }
+
 #endif
   
 // -- MagicMirror implementation.
@@ -1072,9 +862,16 @@ swift_ClassMirror_quickLookObject(HeapObject *owner, const OpaqueValue *value,
 #error __USER_LABEL_PREFIX__ is undefined
 #endif
 
-#define GLUE_EXPANDED(a,b) a##b
-#define GLUE(a,b) GLUE_EXPANDED(a,b)
-#define SYMBOL_NAME(name) GLUE(__USER_LABEL_PREFIX__,name)
+// Workaround the bug of clang in Cygwin 64bit
+// https://llvm.org/bugs/show_bug.cgi?id=26744
+#if defined(__CYGWIN__) && defined(__x86_64__)
+#undef __USER_LABEL_PREFIX__
+#define __USER_LABEL_PREFIX__
+#endif
+
+#define GLUE_EXPANDED(a, b) a##b
+#define GLUE(a, b) GLUE_EXPANDED(a, b)
+#define SYMBOL_NAME(name) GLUE(__USER_LABEL_PREFIX__, name)
 
 #define QUOTE_EXPANDED(literal) #literal
 #define QUOTE(literal) QUOTE_EXPANDED(literal)
@@ -1292,31 +1089,19 @@ MagicMirror::MagicMirror(HeapObject *owner,
 
 /// func reflect<T>(x: T) -> Mirror
 ///
-/// Produce a mirror for any value. If the value's type conforms to _Reflectable,
-/// invoke its _getMirror() method; otherwise, fall back to an implementation
-/// in the runtime that structurally reflects values of any type.
+/// Produce a mirror for any value.  The runtime produces a mirror that
+/// structurally reflects values of any type.
 ///
 /// This function consumes 'value', following Swift's +1 convention for "in"
 /// arguments.
 MirrorReturn swift::swift_reflectAny(OpaqueValue *value, const Metadata *T) {
-  const _ReflectableWitnessTable *witness;
   const Metadata *mirrorType;
   const OpaqueValue *cMirrorValue;
-  std::tie(witness, mirrorType, cMirrorValue)
-    = getReflectableConformance(T, value);
-  
+  std::tie(mirrorType, cMirrorValue) = unwrapExistential(T, value);
+
   OpaqueValue *mirrorValue = const_cast<OpaqueValue*>(cMirrorValue);
-  
-  // Use the _Reflectable conformance if the object has one.
-  if (witness) {
-    auto result = witness->getMirror(mirrorValue, mirrorType);
-    // 'self' of witnesses is passed at +0, so we still need to consume the
-    // value.
-    T->vw_destroy(value);
-    return MirrorReturn(result);
-  }
-  
-  // Otherwise, fall back to MagicMirror.
+
+  // Use MagicMirror.
   Mirror result;
   // Take the value, unless we projected a subvalue from it. We don't want to
   // deal with partial value deinitialization.
@@ -1329,16 +1114,63 @@ MirrorReturn swift::swift_reflectAny(OpaqueValue *value, const Metadata *T) {
 }
 
 // NB: This function is not used directly in the Swift codebase, but is
-// exported for Xcode support. Please coordinate before changing.
+// exported for Xcode support and is used by the sanitizers. Please coordinate
+// before changing.
+//
+/// Demangles a Swift symbol name.
+///
+/// \param mangledName is the symbol name that needs to be demangled.
+/// \param mangledNameLength is the length of the string that should be
+/// demangled.
+/// \param outputBuffer is the user provided buffer where the demangled name
+/// will be placed. If nullptr, a new buffer will be malloced. In that case,
+/// the user of this API is responsible for freeing the returned buffer.
+/// \param outputBufferSize is the size of the output buffer. If the demangled
+/// name does not fit into the outputBuffer, the output will be truncated and
+/// the size will be updated, indicating how large the buffer should be.
+/// \param flags can be used to select the demangling style. TODO: We should
+//// define what these will be.
+/// \returns the demangled name. Returns nullptr if the input String is not a
+/// Swift mangled name.
 SWIFT_RUNTIME_EXPORT
-extern "C" void swift_stdlib_demangleName(const char *mangledName,
-                                          size_t mangledNameLength,
-                                          String *demangledName) {
+extern "C" char *swift_demangle(const char *mangledName,
+                                size_t mangledNameLength,
+                                char *outputBuffer,
+                                size_t *outputBufferSize,
+                                uint32_t flags) {
+  if (flags != 0) {
+    swift::fatalError(0, "Only 'flags' value of '0' is currently supported.");
+  }
+  if (outputBuffer != nullptr && outputBufferSize == nullptr) {
+    swift::fatalError(0, "'outputBuffer' is passed but the size is 'nullptr'.");
+  }
+
+  // Check if we are dealing with Swift mangled name, otherwise, don't try
+  // to demangle and send indication to the user.
+  if (mangledName[0] != '_' || mangledName[1] != 'T') {
+    return nullptr;
+  }
+
+  // Demangle the name.
   auto options = Demangle::DemangleOptions();
   options.DisplayDebuggerGeneratedModule = false;
   auto result =
       Demangle::demangleSymbolAsString(mangledName,
                                        mangledNameLength,
                                        options);
-  new (demangledName) String(result.data(), result.size());
+
+  // If the output buffer is not provided, malloc memory ourselves.
+  if (outputBuffer == nullptr || *outputBufferSize == 0) {
+    return strdup(result.c_str());
+  }
+
+  // Indicate a failure if the result does not fit and will be truncated
+  // and set the required outputBufferSize.
+  if (*outputBufferSize < result.length() + 1) {
+    *outputBufferSize = result.length() + 1;
+  }
+
+  // Copy into the provided buffer.
+  _swift_strlcpy(outputBuffer, result.c_str(), *outputBufferSize);
+  return outputBuffer;
 }

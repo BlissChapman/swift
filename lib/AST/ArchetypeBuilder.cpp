@@ -452,9 +452,8 @@ auto ArchetypeBuilder::PotentialArchetype::getNestedType(
     return getRepresentative()->getNestedType(nestedName, builder);
 
     // If we already have a nested type with this name, return it.
-  llvm::TinyPtrVector<PotentialArchetype *> &nested = NestedTypes[nestedName];
-  if (!nested.empty()) {
-    return nested.front();
+  if (!NestedTypes[nestedName].empty()) {
+    return NestedTypes[nestedName].front();
   }
 
   // Attempt to resolve this nested type to an associated type
@@ -477,9 +476,11 @@ auto ArchetypeBuilder::PotentialArchetype::getNestedType(
           continue;
 
         auto type = alias->getUnderlyingType();
+        SmallVector<Identifier, 4> identifiers;
+        
         if (auto archetype = type->getAs<ArchetypeType>()) {
-          auto containingProtocol = cast<ProtocolDecl>(alias->getParent());
-          SmallVector<Identifier, 4> identifiers;
+          auto containingProtocol = dyn_cast<ProtocolDecl>(alias->getParent());
+          if (!containingProtocol) continue;
           
           // Go up archetype parents until we find our containing protocol.
           while (archetype->getSelfProtocol() != containingProtocol) {
@@ -490,19 +491,32 @@ auto ArchetypeBuilder::PotentialArchetype::getNestedType(
           }
           if (!archetype)
             continue;
-          
+        } else if (auto dependent = type->getAs<DependentMemberType>()) {
+          do {
+            identifiers.push_back(dependent->getName());
+            dependent = dependent->getBase()->getAs<DependentMemberType>();
+          } while (dependent);
+        }
+        
+        if (identifiers.size()) {
           // Go down our PAs until we find the referenced PA.
           auto existingPA = this;
-          while(identifiers.size()) {
-            existingPA = existingPA->getNestedType(identifiers.back(), builder);
-            existingPA = existingPA->getRepresentative();
-            if (existingPA == this)
-              break;
+          while (identifiers.size()) {
+            auto identifier = identifiers.back();
+            // If we end up looking for ourselves, don't recurse.
+            if (existingPA == this && identifier == nestedName) {
+              existingPA = pa;
+            } else {
+              existingPA = existingPA->getNestedType(identifier, builder);
+              existingPA = existingPA->getRepresentative();
+            }
             identifiers.pop_back();
           }
-          pa->Representative = existingPA;
-          RequirementSource source(RequirementSource::Inferred, SourceLoc());
-          pa->SameTypeSource = source;
+          if (pa != existingPA) {
+            pa->Representative = existingPA;
+            RequirementSource source(RequirementSource::Inferred, SourceLoc());
+            pa->SameTypeSource = source;
+          }
         } else if (type->hasArchetype()) {
           // This is a complex type involving other associatedtypes, we'll fail
           // to resolve and get a special diagnosis in finalize.
@@ -516,26 +530,32 @@ auto ArchetypeBuilder::PotentialArchetype::getNestedType(
       // If we have resolved this nested type to more than one associated
       // type, create same-type constraints between them.
       RequirementSource source(RequirementSource::Inferred, SourceLoc());
+      llvm::TinyPtrVector<PotentialArchetype *> &nested =
+          NestedTypes[nestedName];
       if (!nested.empty()) {
         auto existing = nested.front();
-        if (auto alias = existing->getTypeAliasDecl()) {
+        if (existing->getTypeAliasDecl() && !pa->getTypeAliasDecl()) {
           // If we found a typealias first, and now have an associatedtype
           // with the same name, it was a Swift 2 style declaration of the
           // type an inherited associatedtype should be bound to. In such a
           // case we want to make sure the associatedtype is frontmost to
           // generate generics/witness lists correctly, and the alias
           // will be unused/useless for generic constraining anyway.
-          alias->setInvalid();
-          nested.clear();
+          for (auto existing : nested) {
+            existing->Representative = pa;
+            existing->Representative->EquivalenceClass.push_back(existing);
+            existing->SameTypeSource = source;
+          }
+          nested.insert(nested.begin(), pa);
+          NestedTypes[nestedName] = nested;
         } else {
           pa->Representative = existing->getRepresentative();
           pa->Representative->EquivalenceClass.push_back(pa);
           pa->SameTypeSource = source;
+          nested.push_back(pa);
         }
-      }
-
-      // Add this resolved nested type.
-      nested.push_back(pa);
+      } else
+        nested.push_back(pa);
 
       // If there's a superclass constraint that conforms to the protocol,
       // add the appropriate same-type relationship.
@@ -548,6 +568,7 @@ auto ArchetypeBuilder::PotentialArchetype::getNestedType(
 
   // We couldn't resolve the nested type yet, so create an
   // unresolved associated type.
+  llvm::TinyPtrVector<PotentialArchetype *> &nested = NestedTypes[nestedName];
   if (nested.empty()) {
     nested.push_back(new PotentialArchetype(this, nestedName));
     ++builder.Impl->NumUnresolvedNestedTypes;
@@ -662,8 +683,11 @@ ArchetypeBuilder::PotentialArchetype::getType(ArchetypeBuilder &builder) {
       (void) resolver;
 
       // Resolve the member type.
-      auto depMemberType = getDependentType(builder, false)
-        ->castTo<DependentMemberType>();
+      auto type = getDependentType(builder, false);
+      if (type->is<ErrorType>())
+        return NestedType::forConcreteType(type);
+
+      auto depMemberType = type->castTo<DependentMemberType>();
       Type memberType = depMemberType->substBaseType(
                           &mod,
                           parent->ArchetypeOrConcreteType.getAsConcreteType(),
@@ -802,23 +826,17 @@ void ArchetypeBuilder::PotentialArchetype::dump(llvm::raw_ostream &Out,
   if (!ConformsTo.empty()) {
     Out << " : ";
 
-    if (ConformsTo.size() != 1)
-      Out << "protocol<";
-
     bool First = true;
     for (const auto &ProtoAndSource : ConformsTo) {
       if (First)
         First = false;
       else
-        Out << ", ";
+        Out << " & ";
 
       Out << ProtoAndSource.first->getName().str() << " [";
       ProtoAndSource.second.dump(Out, SrcMgr);
       Out << "]";
     }
-
-    if (ConformsTo.size() != 1)
-      Out << ">";
   }
 
   if (Representative != this) {
@@ -1994,15 +2012,9 @@ void ArchetypeBuilder::dump(llvm::raw_ostream &out) {
   out << "\n";
 }
 
-Type ArchetypeBuilder::mapTypeIntoContext(DeclContext *dc, Type type,
-                                         LazyResolver *resolver) {
-  // If the type is not dependent, there's nothing to map.
-  if (!type->hasTypeParameter())
-    return type;
-
+Type ArchetypeBuilder::mapTypeIntoContext(const DeclContext *dc, Type type,
+                                          LazyResolver *resolver) {
   auto genericParams = dc->getGenericParamsOfContext();
-  assert(genericParams && "Missing generic parameters for dependent context");
-  
   return mapTypeIntoContext(dc->getParentModule(), genericParams, type,
                             resolver);
 }
@@ -2011,13 +2023,15 @@ Type ArchetypeBuilder::mapTypeIntoContext(Module *M,
                                           GenericParamList *genericParams,
                                           Type type,
                                           LazyResolver *resolver) {
-  // If the type is not dependent, or we have no generic params, there's nothing
-  // to map.
-  if (!genericParams || !type->hasTypeParameter())
+  auto canType = type->getCanonicalType();
+  assert(!canType->hasArchetype() && "already have a contextual type");
+  if (!canType->hasTypeParameter())
     return type;
 
+  assert(genericParams && "dependent type in non-generic context");
+
   unsigned genericParamsDepth = genericParams->getDepth();
-  return type.transform([&](Type type) -> Type {
+  type = type.transform([&](Type type) -> Type {
     // Map a generic parameter type to its archetype.
     if (auto gpType = type->getAs<GenericTypeParamType>()) {
       auto index = gpType->getIndex();
@@ -2040,7 +2054,7 @@ Type ArchetypeBuilder::mapTypeIntoContext(Module *M,
       if (!myGenericParams->getAllArchetypes().empty())
         return myGenericParams->getPrimaryArchetypes()[index];
 
-      // During type-checking, we may try to mapTypeInContext before
+      // During type-checking, we may try to mapTypeIntoContext before
       // AllArchetypes has been built, so fall back to the generic params.
       return myGenericParams->getParams()[index]->getArchetype();
     }
@@ -2054,10 +2068,13 @@ Type ArchetypeBuilder::mapTypeIntoContext(Module *M,
 
     return type;
   });
+
+  assert(!type->hasTypeParameter() && "not fully substituted");
+  return type;
 }
 
 Type
-ArchetypeBuilder::mapTypeOutOfContext(DeclContext *dc, Type type) {
+ArchetypeBuilder::mapTypeOutOfContext(const DeclContext *dc, Type type) {
   GenericParamList *genericParams = dc->getGenericParamsOfContext();
   return mapTypeOutOfContext(dc->getParentModule(), genericParams, type);
 }
@@ -2065,9 +2082,12 @@ ArchetypeBuilder::mapTypeOutOfContext(DeclContext *dc, Type type) {
 Type ArchetypeBuilder::mapTypeOutOfContext(ModuleDecl *M,
                                            GenericParamList *genericParams,
                                            Type type) {
-  // If the context is non-generic, we're done.
-  if (!genericParams)
+  auto canType = type->getCanonicalType();
+  assert(!canType->hasTypeParameter() && "already have an interface type");
+  if (!canType->hasArchetype())
     return type;
+
+  assert(genericParams && "dependent type in non-generic context");
 
   // Capture the archetype -> interface type mapping.
   TypeSubstitutionMap subs;
@@ -2078,7 +2098,10 @@ Type ArchetypeBuilder::mapTypeOutOfContext(ModuleDecl *M,
     }
   }
 
-  return type.subst(M, subs, SubstFlags::AllowLoweredTypes);
+  type = type.subst(M, subs, SubstFlags::AllowLoweredTypes);
+
+  assert(!type->hasArchetype() && "not fully substituted");
+  return type;
 }
 
 bool ArchetypeBuilder::addGenericSignature(GenericSignature *sig,
@@ -2133,6 +2156,9 @@ addRequirements(
     ArchetypeBuilder::PotentialArchetype *pa,
     llvm::SmallPtrSet<ArchetypeBuilder::PotentialArchetype *, 16> &knownPAs,
     SmallVectorImpl<Requirement> &requirements) {
+
+  auto &ctx = builder.getASTContext();
+
   // If the potential archetype has been bound away to a concrete type,
   // it needs no requirements.
   if (pa->isConcreteType())
@@ -2157,8 +2183,8 @@ addRequirements(
 
   ProtocolType::canonicalizeProtocols(protocols);
   for (auto proto : protocols) {
-    requirements.push_back(Requirement(RequirementKind::Conformance,
-                                       type, proto->getDeclaredType()));
+    requirements.push_back(Requirement(RequirementKind::Conformance, type,
+                                       ProtocolType::get(proto, ctx)));
   }
 }
 

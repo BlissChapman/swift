@@ -380,12 +380,6 @@ struct SILConstantInfo {
     return SILType::getPrimitiveObjectType(SILFnType);
   }
 
-  ArrayRef<Substitution> getForwardingSubstitutions(ASTContext &C) {
-    if (!ContextGenericParams)
-      return { };
-    return ContextGenericParams->getForwardingSubstitutions(C);
-  }
-
   friend bool operator==(SILConstantInfo lhs, SILConstantInfo rhs) {
     return lhs.FormalInterfaceType == rhs.FormalInterfaceType &&
            lhs.LoweredInterfaceType == rhs.LoweredInterfaceType &&
@@ -670,6 +664,10 @@ public:
     return getConstantInfo(constant).SILFnType;
   }
   
+  /// Returns the SILParameterInfo for the given declaration's `self` parameter.
+  /// `constant` must refer to a method.
+  SILParameterInfo getConstantSelfParameter(SILDeclRef constant);
+  
   /// Returns the SILFunctionType the given declaration must use to override.
   /// Will be the same as getConstantFunctionType if the declaration does
   /// not override.
@@ -778,11 +776,6 @@ public:
   CanType get##BridgedType##Type();
 #include "swift/SIL/BridgedTypes.def"
 
-  /// Get the linkage for a protocol conformance's witness table.
-  static SILLinkage getLinkageForProtocolConformance(
-                                             const NormalProtocolConformance *C,
-                                             ForDefinition_t definition);
-
   /// Get the capture list from a closure, with transitive function captures
   /// flattened.
   CaptureInfo getLoweredLocalCaptures(AnyFunctionRef fn);
@@ -811,6 +804,13 @@ public:
   ABIDifference checkFunctionForABIDifferences(SILFunctionType *fnTy1,
                                                SILFunctionType *fnTy2);
 
+
+  /// Lower the function type as a possible substitution for the type of
+  /// \p constant. The result is not cached as part of the constant's normal
+  /// ConstantInfo.
+  CanSILFunctionType
+  getUncachedSILFunctionTypeForConstant(SILDeclRef constant,
+                                  CanAnyFunctionType origInterfaceType);
 private:
   Type getLoweredCBridgedType(AbstractionPattern pattern, Type t,
                               bool canBridgeBool,

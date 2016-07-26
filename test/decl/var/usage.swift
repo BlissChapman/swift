@@ -12,7 +12,7 @@ func basicTests() -> Int {
   return y
 }
 
-func mutableParameter(a : Int, h : Int, var i : Int, j: Int, g: Int) -> Int { // expected-error {{parameters may not have the 'var' specifier}}
+func mutableParameter(_ a : Int, h : Int, var i : Int, j: Int, g: Int) -> Int { // expected-error {{parameters may not have the 'var' specifier}}
   i += 1
   var j = j
   swap(&i, &j)
@@ -36,7 +36,7 @@ func testStruct() {
   c.f()
 }
 
-func takeClosure(fn : () -> ()) {}
+func takeClosure(_ fn : () -> ()) {}
 
 class TestClass {
 
@@ -48,6 +48,21 @@ class TestClass {
   }
 }
 
+enum TestEnum {
+  case Test(Int, Int, Int)
+}
+
+func testEnum() -> Int {
+  let ev = TestEnum.Test(5, 6, 7)
+  switch ev {
+  case .Test(var i, var j, var k): // expected-warning {{variable 'i' was never mutated; consider changing to 'let' constant}} {{14-17=let}}
+                                   // expected-warning@-1 {{variable 'j' was never mutated; consider changing to 'let' constant}} {{21-24=let}}
+                                   // expected-warning@-2 {{variable 'k' was never mutated; consider changing to 'let' constant}} {{28-31=let}}
+    return i + j + k
+  default:
+    return 0
+  }
+}
 
 func nestedFunction() -> Int {
   var x = 42  // No warning about being never-set.
@@ -76,7 +91,7 @@ func property() -> Int {
 }
 
 
-func testInOut(x : inout Int) {  // Ok.
+func testInOut(_ x : inout Int) {  // Ok.
 }
 
 struct TestStruct {
@@ -98,7 +113,7 @@ func testSubscript() -> [Int] {
 }
 
 
-func testTuple(x : Int) -> Int {
+func testTuple(_ x : Int) -> Int {
   var x = x
   var y : Int  // Ok, stored by a tuple
   
@@ -128,7 +143,7 @@ func test() {
 
 func test4() {
   // expected-warning @+1 {{variable 'dest' was never mutated; consider changing to 'let' constant}} {{3-6=let}}
-  var dest = UnsafeMutablePointer<Int>(bitPattern: 0)
+  var dest = UnsafeMutablePointer<Int>(bitPattern: 0)!
 
   dest[0] = 0
 }
@@ -164,7 +179,7 @@ protocol Fooable {
   mutating func mutFoo()
   func immutFoo()
 }
-func testOpenExistential(x: Fooable,
+func testOpenExistential(_ x: Fooable,
                          y: Fooable) {
   var x = x
   let y = y
@@ -175,7 +190,7 @@ func testOpenExistential(x: Fooable,
 
 func couldThrow() throws {}
 
-func testFixitsInStatementsWithPatterns(a : Int?) {
+func testFixitsInStatementsWithPatterns(_ a : Int?) {
   if var b = a,    // expected-warning {{variable 'b' was never mutated; consider changing to 'let' constant}} {{6-9=let}}
       var b2 = a {   // expected-warning {{variable 'b2' was never mutated; consider changing to 'let' constant}} {{7-10=let}}
     _ = b
@@ -197,12 +212,11 @@ func testFixitsInStatementsWithPatterns(a : Int?) {
   }
 }
 
-
 // <rdar://22774938> QoI: "never used" in an "if let" should rewrite expression to use != nil
-func test(a : Int?, b : Any) {
+func test(_ a : Int?, b : Any) {
   if true == true, let x = a {   // expected-warning {{immutable value 'x' was never used; consider replacing with '_' or removing it}} {{24-25=_}}
   }
-  if let x = a, y = a {  // expected-warning {{immutable value 'x' was never used; consider replacing with '_' or removing it}} {{10-11=_}}
+  if let x = a, let y = a {  // expected-warning {{immutable value 'x' was never used; consider replacing with '_' or removing it}} {{10-11=_}}
     _ = y
   }
 
@@ -217,7 +231,18 @@ func test(a : Int?, b : Any) {
   if let x = b as? Int {  // expected-warning {{value 'x' was defined but never used; consider replacing with boolean test}} {{6-14=}} {{16-19=is}}
   }
 
-  
-}
+  // SR-1112
 
+  let xxx: Int? = 0
+
+  if let yyy = xxx { } // expected-warning{{with boolean test}} {{6-16=}} {{19-19= != nil}}
+
+  var zzz: Int? = 0
+  zzz = 1
+
+  if let yyy = zzz { } // expected-warning{{with boolean test}} {{6-16=}} {{19-19= != nil}}
+
+  if let yyy = zzz ?? xxx { } // expected-warning{{with boolean test}} {{6-16=(}} {{26-26=) != nil}}
+
+}
 

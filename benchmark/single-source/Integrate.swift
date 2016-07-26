@@ -16,15 +16,15 @@ import TestsUtils
 // The program performs integration via Gaussian Quadrature
 
 class Integrate {
-  static let epsilon = 1.0e-9;
+  static let epsilon = 1.0e-9
 
-  let fun:(Double)->Double;
+  let fun: (Double) -> Double
 
-  init (f:(Double)->Double) {
-    fun = f;
+  init (f: (Double) -> Double) {
+    fun = f
   }
     
-  private func recEval(l:Double, fl:Double, r:Double, fr:Double, a:Double)->Double {
+  private func recEval(_ l: Double, fl: Double, r: Double, fr: Double, a: Double) -> Double {
     let h = (r - l) / 2
     let hh = h / 2
     let c = l + h
@@ -43,14 +43,14 @@ class Integrate {
   }
 
   @inline(never)
-  func computeArea(left:Double, right:Double)->Double {
+  func computeArea(_ left: Double, right: Double) -> Double {
     return recEval(left, fl:fun(left), r:right, fr:fun(right), a:0)
   }
 }
 
 @inline(never)
-public func run_Integrate(N: Int) {
-  let obj = Integrate(f: { x in (x*x + 1.0) * x});
+public func run_Integrate(_ N: Int) {
+  let obj = Integrate(f: { x in (x*x + 1.0) * x})
   let left = 0.0
   let right = 10.0
   let ref_result = 2550.0

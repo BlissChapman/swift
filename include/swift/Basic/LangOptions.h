@@ -15,8 +15,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef SWIFT_LANGOPTIONS_H
-#define SWIFT_LANGOPTIONS_H
+#ifndef SWIFT_BASIC_LANGOPTIONS_H
+#define SWIFT_BASIC_LANGOPTIONS_H
 
 #include "swift/Basic/LLVM.h"
 #include "clang/Basic/VersionTuple.h"
@@ -140,18 +140,38 @@ namespace swift {
     /// \brief Enable experimental property behavior feature.
     bool EnableExperimentalPropertyBehaviors = false;
 
+    /// \brief Enable experimental nested generic types feature.
+    bool EnableExperimentalNestedGenericTypes = false;
+
+    /// \brief Enable generalized collection casting.
+    bool EnableExperimentalCollectionCasts = false;
+
     /// Should we check the target OSs of serialized modules to see that they're
     /// new enough?
     bool EnableTargetOSChecking = true;
 
+    /// Should 'private' use Swift 3's lexical scoping, or the Swift 2 behavior
+    /// of 'fileprivate'?
+    bool EnableSwift3Private = true;
+
+    /// Whether to use the import as member inference system
+    ///
+    /// When importing a global, try to infer whether we can import it as a
+    /// member of some type instead. This includes inits, computed properties,
+    /// and methods.
+    bool InferImportAsMember = false;
+
     /// Whether we are stripping the "NS" prefix from Foundation et al.
-    bool StripNSPrefix = false;
+    bool StripNSPrefix = true;
+
+    /// Should 'id' in Objective-C be imported as 'Any' in Swift?
+    bool EnableIdAsAny = false;
 
     /// Enable the Swift 3 migration via Fix-Its.
     bool Swift3Migration = false;
 
-    /// Allow IUO types to be inferred for otherwise untyped variables.
-    bool InferIUOs = true;
+    /// Enable typealiases in protocols.
+    bool EnableProtocolTypealiases = false;
 
     /// Sets the target we are building for and updates platform conditions
     /// to match.
@@ -173,9 +193,8 @@ namespace swift {
       } else if (Target.isWatchOS()) {
         Target.getOSVersion(major, minor, revision);
       } else if (Target.isOSLinux() || Target.isOSFreeBSD() ||
-                 Target.isOSWindows() ||
-                 Target.getTriple().empty())
-      {
+                 Target.isAndroid() || Target.isOSWindows() ||
+                 Target.isPS4() || Target.getTriple().empty()) {
         major = minor = revision = 0;
       } else {
         llvm_unreachable("Unsupported target OS");
@@ -223,18 +242,24 @@ namespace swift {
 
     /// Returns true if the 'os' platform condition argument represents
     /// a supported target operating system.
-    static bool isPlatformConditionOSSupported(StringRef OSName);
+    ///
+    /// Note that this also canonicalizes the OS name if the check returns
+    /// true.
+    static bool checkPlatformConditionOS(StringRef &OSName);
 
     /// Returns true if the 'arch' platform condition argument represents
     /// a supported target architecture.
     static bool isPlatformConditionArchSupported(StringRef ArchName);
+
+    /// Returns true if the 'endian' platform condition argument represents
+    /// a supported target endianness.
+    static bool isPlatformConditionEndiannessSupported(StringRef endianness);
 
   private:
     llvm::SmallVector<std::pair<std::string, std::string>, 3>
         PlatformConditionValues;
     llvm::SmallVector<std::string, 2> CustomConditionalCompilationFlags;
   };
-}
+} // end namespace swift
 
-#endif // SWIFT_LANGOPTIONS_H
-
+#endif // SWIFT_BASIC_LANGOPTIONS_H

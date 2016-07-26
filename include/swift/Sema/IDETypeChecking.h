@@ -28,6 +28,7 @@ namespace swift {
   class Expr;
   class LazyResolver;
   class ExtensionDecl;
+  class ProtocolDecl;
 
   /// \brief Typecheck a declaration parsed during code completion.
   ///
@@ -47,6 +48,9 @@ namespace swift {
 
   Type lookUpTypeInContext(DeclContext *DC, StringRef Name);
 
+  void collectDefaultImplementationForProtocolMembers(ProtocolDecl *PD,
+                        llvm::SmallDenseMap<ValueDecl*, ValueDecl*> &DefaultMap);
+
   /// \brief Given an unresolved member E and its parent P, this function tries
   /// to infer the type of E.
   /// \returns true on success, false on error.
@@ -58,6 +62,14 @@ namespace swift {
   /// \returns Resolved type on success, nullptr on error.
   Type checkMemberType(DeclContext &DC, Type BaseTy, ArrayRef<Identifier> Names);
 
+  struct ResolveMemberResult {
+    ValueDecl *Favored = nullptr;
+    std::vector<ValueDecl*> OtherViables;
+    operator bool() const { return Favored; }
+  };
+
+  ResolveMemberResult resolveValueMember(DeclContext &DC, Type BaseTy,
+                                         DeclName Name);
 
   /// \brief Given a type and an extension to the original type decl of that type,
   /// decide if the extension has been applied, i.e. if the requirements of the
@@ -65,11 +77,23 @@ namespace swift {
   /// \returns True on applied, false on not applied.
   bool isExtensionApplied(DeclContext &DC, Type Ty, const ExtensionDecl *ED);
 
+/// The kind of type checking to perform for code completion.
+  enum class CompletionTypeCheckKind {
+    /// Type check the expression as normal.
+    Normal,
+
+    /// Type check the argument to an Objective-C #keyPath.
+    ObjCKeyPath,
+  };
+
   /// \brief Return the type of an expression parsed during code completion, or
   /// None on error.
-  Optional<Type> getTypeOfCompletionContextExpr(ASTContext &Ctx,
-                                                DeclContext *DC,
-                                                Expr *&parsedExpr);
+  Optional<Type> getTypeOfCompletionContextExpr(
+                   ASTContext &Ctx,
+                   DeclContext *DC,
+                   CompletionTypeCheckKind kind,
+                   Expr *&parsedExpr,
+                   ConcreteDeclRef &referencedDecl);
 
   /// Typecheck the sequence expression \p parsedExpr for code completion.
   ///

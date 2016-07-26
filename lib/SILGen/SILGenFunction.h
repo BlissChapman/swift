@@ -353,6 +353,8 @@ public:
   /// into.
   SILGenBuilder B;
 
+  SILOpenedArchetypesTracker OpenedArchetypesTracker;
+
   struct BreakContinueDest {
     LabeledStmt *Target;
     JumpDest BreakDest;
@@ -465,7 +467,7 @@ public:
 
   /// Emit code to increment a counter for profiling.
   void emitProfilerIncrement(ASTNode N) {
-    if (SGM.Profiler)
+    if (SGM.Profiler && SGM.Profiler->hasRegionCounters())
       SGM.Profiler->emitCounterIncrement(B, N);
   }
   
@@ -860,16 +862,24 @@ public:
                                                  const TypeLowering &optTL,
                                                  SGFContext C = SGFContext());
 
-  typedef std::function<ManagedValue(SILGenFunction &gen,
-                                     SILLocation loc,
-                                     ManagedValue input,
-                                     SILType loweredResultTy)> ValueTransform;
+  typedef llvm::function_ref<ManagedValue(SILGenFunction &gen,
+                                    SILLocation loc,
+                                    ManagedValue input,
+                                    SILType loweredResultTy)> ValueTransformRef;
 
   /// Emit a transformation on the value of an optional type.
   ManagedValue emitOptionalToOptional(SILLocation loc,
                                       ManagedValue input,
                                       SILType loweredResultTy,
-                                      const ValueTransform &transform);
+                                      ValueTransformRef transform);
+
+  /// Emit a reinterpret-cast from one pointer type to another, using a library
+  /// intrinsic.
+  RValue emitPointerToPointer(SILLocation loc,
+                              ManagedValue input,
+                              CanType inputTy,
+                              CanType outputTy,
+                              SGFContext C = SGFContext());
 
   ManagedValue emitClassMetatypeToObject(SILLocation loc,
                                          ManagedValue v,
@@ -1006,6 +1016,7 @@ public:
   /// Emit 'undef' in a particular formal type.
   ManagedValue emitUndef(SILLocation loc, Type type);
   ManagedValue emitUndef(SILLocation loc, SILType type);
+  RValue emitUndefRValue(SILLocation loc, Type type);
   
   std::pair<ManagedValue, SILValue>
   emitUninitializedArrayAllocation(Type ArrayTy,
@@ -1037,12 +1048,6 @@ public:
   SILValue emitDynamicMethodRef(SILLocation loc, SILDeclRef constant,
                                 SILConstantInfo constantInfo);  
 
-  /// Returns a reference to a constant in local context. This will return a
-  /// retained closure object reference if the constant refers to a local func
-  /// decl.
-  ManagedValue emitFunctionRef(SILLocation loc, SILDeclRef constant,
-                               SILConstantInfo constantInfo);
-  
   /// Emit the specified VarDecl as an LValue if possible, otherwise return
   /// null.
   ManagedValue emitLValueForDecl(SILLocation loc, VarDecl *var,
@@ -1073,9 +1078,13 @@ public:
                     CaptureEmission purpose,
                     SmallVectorImpl<ManagedValue> &captures);
 
+  /// Produce a reference to a function, which may be a local function
+  /// with captures. If the function is generic, substitutions must be
+  /// given. The result is re-abstracted to the given expected type.
   ManagedValue emitClosureValue(SILLocation loc,
                                 SILDeclRef function,
-                                AnyFunctionRef TheClosure);
+                                CanType expectedType,
+                                ArrayRef<Substitution> subs);
   
   ArgumentSource prepareAccessorBaseArg(SILLocation loc, ManagedValue base,
                                         CanType baseFormalType,
@@ -1384,11 +1393,11 @@ public:
                                         SILFunctionTypeRepresentation srcRep,
                                         CanType nativeTy);
 
-  /// Convert a bridged error type to the native Swift ErrorProtocol
+  /// Convert a bridged error type to the native Swift Error
   /// representation.  The value may be optional.
   ManagedValue emitBridgedToNativeError(SILLocation loc, ManagedValue v);
 
-  /// Convert a value in the native Swift ErrorProtocol representation to
+  /// Convert a value in the native Swift Error representation to
   /// a bridged error type representation.
   ManagedValue emitNativeToBridgedError(SILLocation loc, ManagedValue v,
                                         CanType bridgedType);
@@ -1585,16 +1594,6 @@ public:
   /// Produce a substitution for invoking a pointer argument conversion
   /// intrinsic.
   Substitution getPointerSubstitution(Type pointerType);
-
-  /// Recognize used conformances from an imported type when we must emit the
-  /// witness table.
-  ///
-  /// This arises in _BridgedNSError, where we wouldn't otherwise pull in the
-  /// witness table, causing dynamic casts to perform incorrectly.
-  void checkForImportedUsedConformances(Type type);
-  void checkForImportedUsedConformances(ExplicitCastExpr *expr) {
-    checkForImportedUsedConformances(expr->getCastTypeLoc().getType());
-  }
 };
 
 

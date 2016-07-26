@@ -17,13 +17,13 @@ import ObjectiveC
 // Objective-C Primitive Types
 //===----------------------------------------------------------------------===//
 
-public typealias Boolean = Swift.Boolean
 /// The Objective-C BOOL type.
 ///
 /// On 64-bit iOS, the Objective-C BOOL type is a typedef of C/C++
 /// bool. Elsewhere, it is "signed char". The Clang importer imports it as
 /// ObjCBool.
-public struct ObjCBool : Boolean, BooleanLiteralConvertible {
+@_fixed_layout
+public struct ObjCBool : ExpressibleByBooleanLiteral {
 #if os(OSX) || (os(iOS) && (arch(i386) || arch(arm)))
   // On OS X and 32-bit iOS, Objective-C's BOOL type is a "signed char".
   var _value: Int8
@@ -38,7 +38,7 @@ public struct ObjCBool : Boolean, BooleanLiteralConvertible {
 
 #else
   // Everywhere else it is C/C++'s "Bool"
-  var _value : Bool
+  var _value: Bool
 
   public init(_ value: Bool) {
     self._value = value
@@ -77,16 +77,14 @@ extension ObjCBool : CustomStringConvertible {
 
 // Functions used to implicitly bridge ObjCBool types to Swift's Bool type.
 
-@warn_unused_result
 public // COMPILER_INTRINSIC
-func _convertBoolToObjCBool(x: Bool) -> ObjCBool {
+func _convertBoolToObjCBool(_ x: Bool) -> ObjCBool {
   return ObjCBool(x)
 }
 
-@warn_unused_result
 public // COMPILER_INTRINSIC
-func _convertObjCBoolToBool(x: ObjCBool) -> Bool {
-  return Bool(x)
+func _convertObjCBoolToBool(_ x: ObjCBool) -> Bool {
+  return x.boolValue
 }
 
 /// The Objective-C SEL type.
@@ -96,8 +94,9 @@ func _convertObjCBoolToBool(x: ObjCBool) -> Bool {
 /// convert between C strings and selectors.
 ///
 /// The compiler has special knowledge of this type.
-public struct Selector : StringLiteralConvertible, NilLiteralConvertible {
-  var ptr : OpaquePointer
+@_fixed_layout
+public struct Selector : ExpressibleByStringLiteral {
+  var ptr: OpaquePointer
 
   /// Create a selector from a string.
   public init(_ str : String) {
@@ -120,15 +119,8 @@ public struct Selector : StringLiteralConvertible, NilLiteralConvertible {
   public init(stringLiteral value: String) {
     self = sel_registerName(value)
   }
-
-  /// Create an instance initialized with `nil`.
-  @_transparent
-  public init(nilLiteral: ()) {
-    ptr = nil
-  }
 }
 
-@warn_unused_result
 public func ==(lhs: Selector, rhs: Selector) -> Bool {
   return sel_isEqual(lhs, rhs)
 }
@@ -153,7 +145,7 @@ extension Selector : CustomStringConvertible {
     if name == nil {
       return "<NULL>"
     }
-    return String(cString: name)
+    return String(cString: name!)
   }
 }
 
@@ -176,36 +168,32 @@ extension Selector : CustomReflectable {
 // NSZone
 //===----------------------------------------------------------------------===//
 
-public struct NSZone : NilLiteralConvertible {
-  var pointer : OpaquePointer
-
-  public init() { pointer = nil }
-
-  /// Create an instance initialized with `nil`.
-  @_transparent
-  public init(nilLiteral: ()) {
-    pointer = nil
-  }
+@_fixed_layout
+public struct NSZone {
+  var pointer: OpaquePointer
 }
 
 // Note: NSZone becomes Zone in Swift 3.
 typealias Zone = NSZone
 
 //===----------------------------------------------------------------------===//
-// FIXME: @autoreleasepool substitute
+// @autoreleasepool substitute
 //===----------------------------------------------------------------------===//
 
-@warn_unused_result
 @_silgen_name("_swift_objc_autoreleasePoolPush")
 func __pushAutoreleasePool() -> OpaquePointer
 
 @_silgen_name("_swift_objc_autoreleasePoolPop")
-func __popAutoreleasePool(pool: OpaquePointer)
+func __popAutoreleasePool(_ pool: OpaquePointer)
 
-public func autoreleasepool(@noescape code: () -> Void) {
+public func autoreleasepool<Result>(
+  invoking body: @noescape () throws -> Result
+) rethrows -> Result {
   let pool = __pushAutoreleasePool()
-  code()
-  __popAutoreleasePool(pool)
+  defer {
+    __popAutoreleasePool(pool)
+  }
+  return try body()
 }
 
 //===----------------------------------------------------------------------===//
@@ -219,25 +207,6 @@ public var YES: ObjCBool {
 @available(*, unavailable, message: "Use 'Bool' value 'false' instead")
 public var NO: ObjCBool {
   fatalError("can't retrieve unavailable property")
-}
-
-// FIXME: We can't make the fully-generic versions @_transparent due to
-// rdar://problem/19418937, so here are some @_transparent overloads
-// for ObjCBool
-@_transparent
-@warn_unused_result
-public func && <T : Boolean>(
-  lhs: T, @autoclosure rhs: () -> ObjCBool
-) -> Bool {
-  return lhs.boolValue ? rhs().boolValue : false
-}
-
-@_transparent
-@warn_unused_result
-public func || <T : Boolean>(
-  lhs: T, @autoclosure rhs: () -> ObjCBool
-) -> Bool {
-  return lhs.boolValue ? true : rhs().boolValue
 }
 
 //===----------------------------------------------------------------------===//
@@ -261,7 +230,6 @@ extension NSObject : Equatable, Hashable {
   }
 }
 
-@warn_unused_result
 public func == (lhs: NSObject, rhs: NSObject) -> Bool {
   return lhs.isEqual(rhs)
 }

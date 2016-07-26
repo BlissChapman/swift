@@ -18,17 +18,20 @@
 // RUN: FileCheck %s < %t/classes.h
 // RUN: FileCheck --check-prefix=NEGATIVE %s < %t/classes.h
 // RUN: %check-in-clang %t/classes.h
-// RUN: not %check-in-clang -fno-modules %t/classes.h
-// RUN: %check-in-clang -fno-modules %t/classes.h -include Foundation.h -include CoreFoundation.h
+// RUN: not %check-in-clang -fno-modules -Qunused-arguments %t/classes.h
+// RUN: %check-in-clang -fno-modules -Qunused-arguments %t/classes.h -include Foundation.h -include CoreFoundation.h -include objc_generics.h
 
 // CHECK-NOT: AppKit;
 // CHECK-NOT: Properties;
 // CHECK-NOT: Swift;
 // CHECK-LABEL: @import Foundation;
 // CHECK-NEXT: @import CoreGraphics;
+// CHECK-NEXT: @import CoreFoundation;
+// CHECK-NEXT: @import objc_generics;
 // CHECK-NOT: AppKit;
 // CHECK-NOT: Swift;
 import Foundation
+import objc_generics
 import AppKit // only used in implementations
 import CoreFoundation
 
@@ -48,11 +51,11 @@ import CoreFoundation
 // CHECK-NEXT: init
 // CHECK-NEXT: @end
 @objc class BridgedTypes {
-  func dictBridge(x: Dictionary<NSObject, AnyObject>) -> Dictionary<NSObject, AnyObject> {
+  func dictBridge(_ x: Dictionary<NSObject, AnyObject>) -> Dictionary<NSObject, AnyObject> {
     return x
   }
 
-  func setBridge(x: Set<NSObject>) -> Set<NSObject> {
+  func setBridge(_ x: Set<NSObject>) -> Set<NSObject> {
     return x
   }
 }
@@ -125,9 +128,9 @@ class NotObjC {}
 // CHECK-LABEL: @interface Methods{{$}}
 // CHECK-NEXT: - (void)test;
 // CHECK-NEXT: + (void)test2;
-// CHECK-NEXT: - (void * _Null_unspecified)testPrimitives:(BOOL)b i:(NSInteger)i f:(float)f d:(double)d u:(NSUInteger)u;
+// CHECK-NEXT: - (void * _Nonnull)testPrimitives:(BOOL)b i:(NSInteger)i f:(float)f d:(double)d u:(NSUInteger)u;
 // CHECK-NEXT: - (void)testString:(NSString * _Nonnull)s;
-// CHECK-NEXT: - (void)testSelector:(SEL _Null_unspecified)sel boolean:(BOOL)b;
+// CHECK-NEXT: - (void)testSelector:(SEL _Nonnull)sel boolean:(BOOL)b;
 // CHECK-NEXT: - (void)testCSignedTypes:(signed char)a b:(short)b c:(int)c d:(long)d e:(long long)e;
 // CHECK-NEXT: - (void)testCUnsignedTypes:(unsigned char)a b:(unsigned short)b c:(unsigned int)c d:(unsigned long)d e:(unsigned long long)e;
 // CHECK-NEXT: - (void)testCChars:(char)basic wchar:(wchar_t)wide char16:(char16_t)char16 char32:(char32_t)char32;
@@ -157,26 +160,28 @@ class NotObjC {}
 // CHECK-NEXT: - (void)methodWithReservedParameterNames:(id _Nonnull)long_ protected:(id _Nonnull)protected_;
 // CHECK-NEXT: - (void)honorRenames:(CustomName * _Nonnull)_;
 // CHECK-NEXT: - (Methods * _Nullable __unsafe_unretained)unmanaged:(id _Nonnull __unsafe_unretained)_;
+// CHECK-NEXT: - (void)initAllTheThings SWIFT_METHOD_FAMILY(none);
+// CHECK-NEXT: - (void)initTheOtherThings SWIFT_METHOD_FAMILY(none);
 // CHECK-NEXT: init
 // CHECK-NEXT: @end
 @objc class Methods {
   func test() {}
   class func test2() {}
 
-  func testPrimitives(b: Bool, i: Int, f: Float, d: Double, u: UInt)
-    -> OpaquePointer { return nil }
-  func testString(s: String) {}
-  func testSelector(sel: Selector, boolean b: ObjCBool) {}
+  func testPrimitives(_ b: Bool, i: Int, f: Float, d: Double, u: UInt)
+    -> OpaquePointer { return OpaquePointer(bitPattern: -1)! }
+  func testString(_ s: String) {}
+  func testSelector(_ sel: Selector, boolean b: ObjCBool) {}
 
-  func testCSignedTypes(a: CSignedChar, b: CShort, c: CInt, d: CLong, e: CLongLong) {}
-  func testCUnsignedTypes(a: CUnsignedChar, b: CUnsignedShort, c: CUnsignedInt, d: CUnsignedLong, e: CUnsignedLongLong) {}
-  func testCChars(basic: CChar, wchar wide: CWideChar, char16: CChar16, char32: CChar32) {}
-  func testCFloats(a: CFloat, b: CDouble) {}
-  func testCBool(a: CBool) {}
+  func testCSignedTypes(_ a: CSignedChar, b: CShort, c: CInt, d: CLong, e: CLongLong) {}
+  func testCUnsignedTypes(_ a: CUnsignedChar, b: CUnsignedShort, c: CUnsignedInt, d: CUnsignedLong, e: CUnsignedLongLong) {}
+  func testCChars(_ basic: CChar, wchar wide: CWideChar, char16: CChar16, char32: CChar32) {}
+  func testCFloats(_ a: CFloat, b: CDouble) {}
+  func testCBool(_ a: CBool) {}
 
-  func testSizedSignedTypes(a: Int8, b: Int16, c: Int32, d: Int64) {}
-  func testSizedUnsignedTypes(a: UInt8, b: UInt16, c: UInt32, d: UInt64) {}
-  func testSizedFloats(a: Float32, b: Float64) {}
+  func testSizedSignedTypes(_ a: Int8, b: Int16, c: Int32, d: Int64) {}
+  func testSizedUnsignedTypes(_ a: UInt8, b: UInt16, c: UInt32, d: UInt64) {}
+  func testSizedFloats(_ a: Float32, b: Float64) {}
 
   func getDynamicSelf() -> Self { return self }
   class func getSelf() -> Methods.Type { return self }
@@ -190,28 +195,31 @@ class NotObjC {}
     return ClassWithCustomName.self
   }
 
-  func testParens(a: ((Int))) {}
+  func testParens(_ a: ((Int))) {}
 
   func testIgnoredParam(_: Int) {}
   func testIgnoredParams(_: Int, again _: Int) {}
 
-  func testArrayBridging(a: [Methods]) {}
-  func testArrayBridging2(a: [AnyObject]) {}
-  func testArrayBridging3(a: [String]) {}
+  func testArrayBridging(_ a: [Methods]) {}
+  func testArrayBridging2(_ a: [AnyObject]) {}
+  func testArrayBridging3(_ a: [String]) {}
 
-  func testDictionaryBridging(a: [NSObject : AnyObject]) {}
-  func testDictionaryBridging2(a: [NSNumber : Methods]) {}
-  func testDictionaryBridging3(a: [String : String]) {}
+  func testDictionaryBridging(_ a: [NSObject : AnyObject]) {}
+  func testDictionaryBridging2(_ a: [NSNumber : Methods]) {}
+  func testDictionaryBridging3(_ a: [String : String]) {}
 
-  func testSetBridging(a: Set<NSObject>) {}
+  func testSetBridging(_ a: Set<NSObject>) {}
 
   @IBAction func actionMethod(_: AnyObject) {}
 
-  func methodWithReservedParameterNames(long: AnyObject, protected: AnyObject) {}
+  func methodWithReservedParameterNames(_ long: AnyObject, protected: AnyObject) {}
 
   func honorRenames(_: ClassWithCustomName) {}
 
   func unmanaged(_: Unmanaged<AnyObject>) -> Unmanaged<Methods>? { return nil }
+
+  func initAllTheThings() {}
+  @objc(initTheOtherThings) func setUpOtherThings() {}
 }
 
 typealias AliasForNSRect = NSRect
@@ -225,25 +233,27 @@ typealias AliasForNSRect = NSRect
 // CHECK-NEXT: - (NSArray * _Nonnull)emptyArray;
 // CHECK-NEXT: - (NSArray * _Nullable)maybeArray;
 // CHECK-NEXT: - (NSRuncingMode)someEnum;
-// CHECK-NEXT: - (struct _NSZone * _Null_unspecified)zone;
+// CHECK-NEXT: - (Class <NSCoding> _Nullable)protocolClass;
+// CHECK-NEXT: - (struct _NSZone * _Nullable)zone;
 // CHECK-NEXT: - (CFTypeRef _Nullable)cf:(CFTreeRef _Nonnull)x str:(CFStringRef _Nonnull)str str2:(CFMutableStringRef _Nonnull)str2 obj:(CFAliasForTypeRef _Nonnull)obj;
 // CHECK-NEXT: - (void)appKitInImplementation;
 // CHECK-NEXT: - (NSURL * _Nullable)returnsURL;
 // CHECK-NEXT: init
 // CHECK-NEXT: @end
 @objc class MethodsWithImports {
-  func getOrigin(r: NSRect) -> NSPoint { return r.origin }
-  func getOriginX(r: AliasForNSRect) -> CGFloat { return r.origin.x }
-  func getOriginY(r: CGRect) -> CGFloat { return r.origin.y }
+  func getOrigin(_ r: NSRect) -> NSPoint { return r.origin }
+  func getOriginX(_ r: AliasForNSRect) -> CGFloat { return r.origin.x }
+  func getOriginY(_ r: CGRect) -> CGFloat { return r.origin.y }
 
   func emptyArray() -> NSArray { return NSArray() }
   func maybeArray() -> NSArray? { return nil }
 
-  func someEnum() -> NSRuncingMode { return .mince }
+  func someEnum() -> RuncingMode { return .mince }
+  func protocolClass() -> NSCoding.Type? { return nil }
 
-  func zone() -> NSZone { return nil }
+  func zone() -> NSZone? { return nil }
 
-  func cf(x: CFTree, str: CFString, str2: CFMutableString, obj: CFAliasForType) -> CFTypeRef? { return nil }
+  func cf(_ x: CFTree, str: CFString, str2: CFMutableString, obj: CFAliasForType) -> CFTypeRef? { return nil }
 
   func appKitInImplementation() {
     let _ : NSResponder? = nil
@@ -253,19 +263,24 @@ typealias AliasForNSRect = NSRect
 }
 
 // CHECK-LABEL: @interface MethodsWithPointers
-// CHECK-NEXT: - (id _Nonnull * _Null_unspecified)test:(NSInteger * _Null_unspecified)a;
-// CHECK-NEXT: - (void)testNested:(NSInteger * _Null_unspecified * _Null_unspecified)a;
-// CHECK-NEXT: - (void)testBridging:(NSInteger const * _Null_unspecified)a b:(NSInteger * _Null_unspecified)b c:(Methods * _Nonnull * _Null_unspecified)c;
-// CHECK-NEXT: - (void)testBridgingVoid:(void * _Null_unspecified)a b:(void const * _Null_unspecified)b;
+// CHECK-NEXT: - (id _Nonnull * _Nonnull)test:(NSInteger * _Nonnull)a;
+// CHECK-NEXT: - (void)testNested:(NSInteger * _Nonnull * _Nonnull)a;
+// CHECK-NEXT: - (void)testBridging:(NSInteger const * _Nonnull)a b:(NSInteger * _Nonnull)b c:(Methods * _Nonnull * _Nonnull)c;
+// CHECK-NEXT: - (void)testBridgingVoid:(void * _Nonnull)a b:(void const * _Nonnull)b;
+// CHECK-NEXT: - (void)testBridgingOptionality:(NSInteger const * _Nullable)a b:(NSInteger * _Null_unspecified)b c:(Methods * _Nullable * _Nullable)c;
 // CHECK-NEXT: init
 // CHECK-NEXT: @end
 @objc class MethodsWithPointers {
-  func test(a: UnsafeMutablePointer<Int>) -> UnsafeMutablePointer<AnyObject> { return nil }
+  func test(_ a: UnsafeMutablePointer<Int>) -> UnsafeMutablePointer<AnyObject> {
+    return UnsafeMutablePointer(bitPattern: -1)!
+  }
 
-  func testNested(a: UnsafeMutablePointer<UnsafeMutablePointer<Int>>) {}
+  func testNested(_ a: UnsafeMutablePointer<UnsafeMutablePointer<Int>>) {}
 
-  func testBridging(a: UnsafePointer<Int>, b: UnsafeMutablePointer<Int>, c: AutoreleasingUnsafeMutablePointer<Methods>) {}
-  func testBridgingVoid(a: UnsafeMutablePointer<Void>, b: UnsafePointer<Void>) {}
+  func testBridging(_ a: UnsafePointer<Int>, b: UnsafeMutablePointer<Int>, c: AutoreleasingUnsafeMutablePointer<Methods>) {}
+  func testBridgingVoid(_ a: UnsafeMutablePointer<Void>, b: UnsafePointer<Void>) {}
+
+  func testBridgingOptionality(_ a: UnsafePointer<Int>?, b: UnsafeMutablePointer<Int>!, c: AutoreleasingUnsafeMutablePointer<Methods?>?) {}
 }
 
 // CHECK-LABEL: @interface MyObject : NSObject
@@ -361,8 +376,11 @@ public class NonObjCClass { }
 // CHECK-NEXT: @property (nonatomic, readonly, strong) Properties * _Nonnull mySelf;
 // CHECK-NEXT: @property (nonatomic, readonly) double pi;
 // CHECK-NEXT: @property (nonatomic) NSInteger computed;
+// CHECK-NEXT: SWIFT_CLASS_PROPERTY(@property (nonatomic, class, strong) Properties * _Nonnull shared;)
 // CHECK-NEXT: + (Properties * _Nonnull)shared;
 // CHECK-NEXT: + (void)setShared:(Properties * _Nonnull)newValue;
+// CHECK-NEXT: SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) Properties * _Nonnull sharedRO;)
+// CHECK-NEXT: + (Properties * _Nonnull)sharedRO;
 // CHECK-NEXT: @property (nonatomic, weak) Properties * _Nullable weakOther;
 // CHECK-NEXT: @property (nonatomic, assign) Properties * _Nonnull unownedOther;
 // CHECK-NEXT: @property (nonatomic, unsafe_unretained) Properties * _Nonnull unmanagedOther;
@@ -391,15 +409,37 @@ public class NonObjCClass { }
 // CHECK-NEXT: @property (nonatomic, copy) IBOutletCollection(CustomName) NSArray<CustomName *> *  _Nullable outletCollectionOptional;
 // CHECK-NEXT: @property (nonatomic, copy) IBOutletCollection(id) NSArray * _Nullable outletCollectionAnyObject;
 // CHECK-NEXT: @property (nonatomic, copy) IBOutletCollection(id) NSArray<id <NSObject>> * _Nullable outletCollectionProto;
+// CHECK-NEXT: SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly) NSInteger staticInt;)
 // CHECK-NEXT: + (NSInteger)staticInt;
+// CHECK-NEXT: SWIFT_CLASS_PROPERTY(@property (nonatomic, class, copy) NSString * _Nonnull staticString;)
 // CHECK-NEXT: + (NSString * _Nonnull)staticString;
 // CHECK-NEXT: + (void)setStaticString:(NSString * _Nonnull)value;
+// CHECK-NEXT: SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly) double staticDouble;)
 // CHECK-NEXT: + (double)staticDouble;
+// CHECK-NEXT: SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, copy) NSDictionary<NSString *, NSString *> * _Nonnull staticDictionary;)
+// CHECK-NEXT: + (NSDictionary<NSString *, NSString *> * _Nonnull)staticDictionary;
 // CHECK-NEXT: @property (nonatomic, strong) Properties * _Nullable wobble;
 // CHECK-NEXT: @property (nonatomic, getter=isEnabled, setter=setIsEnabled:) BOOL enabled;
-// CHECK-NEXT: @property (nonatomic, getter=isAnimated) BOOL animated;
+// CHECK-NEXT: @property (nonatomic) BOOL isAnimated;
 // CHECK-NEXT: @property (nonatomic, getter=register, setter=setRegister:) BOOL register_;
 // CHECK-NEXT: @property (nonatomic, readonly, strong, getter=this) Properties * _Nonnull this_;
+// CHECK-NEXT: @property (nonatomic, readonly) NSInteger privateSetter;
+// CHECK-NEXT: @property (nonatomic, readonly, getter=customGetterNameForPrivateSetter) BOOL privateSetterCustomNames;
+// CHECK-NEXT: SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly) NSInteger privateSetter;)
+// CHECK-NEXT: + (NSInteger)privateSetter;
+// CHECK-NEXT: SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, getter=customGetterNameForPrivateSetter) BOOL privateSetterCustomNames;)
+// CHECK-NEXT: + (BOOL)customGetterNameForPrivateSetter;
+// CHECK-NEXT: SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly) NSInteger sharedConstant;)
+// CHECK-NEXT: + (NSInteger)sharedConstant;
+// CHECK-NEXT: @property (nonatomic) NSInteger initContext;
+// CHECK-NEXT: - (NSInteger)initContext SWIFT_METHOD_FAMILY(none);
+// CHECK-NEXT: @property (nonatomic, readonly) NSInteger initContextRO;
+// CHECK-NEXT: - (NSInteger)initContextRO SWIFT_METHOD_FAMILY(none);
+// CHECK-NEXT: @property (nonatomic, getter=initGetter) BOOL getterIsInit;
+// CHECK-NEXT: - (BOOL)initGetter SWIFT_METHOD_FAMILY(none);
+// CHECK-NEXT: @property (nonatomic, setter=initSetter:) BOOL setterIsInit;
+// CHECK-NEXT: - (void)initSetter:(BOOL)newValue SWIFT_METHOD_FAMILY(none);
+// CHECK-NEXT: @property (nonatomic, copy) NSURL * _Nullable customValueTypeProp;
 // CHECK-NEXT: init
 // CHECK-NEXT: @end
 @objc class Properties {
@@ -420,6 +460,10 @@ public class NonObjCClass { }
   class var shared: Properties {
     get { return Properties() }
     set { }
+  }
+
+  class var sharedRO: Properties {
+    get { return Properties() }
   }
 
   weak var weakOther: Properties?
@@ -464,6 +508,7 @@ public class NonObjCClass { }
   static var staticDouble: Double {
     return 2.0
   }
+  static var staticDictionary: [String: String] { return [:] }
 
   @objc(wobble) var wibble: Properties?
 
@@ -476,6 +521,32 @@ public class NonObjCClass { }
 
   var register: Bool = false
   var this: Properties { return self }
+
+  private(set) var privateSetter = 2
+  private(set) var privateSetterCustomNames: Bool {
+    @objc(customGetterNameForPrivateSetter) get { return true }
+    @objc(customSetterNameForPrivateSetter:) set {}
+  }
+
+  static private(set) var privateSetter = 2
+  class private(set) var privateSetterCustomNames: Bool {
+    @objc(customGetterNameForPrivateSetter) get { return true }
+    @objc(customSetterNameForPrivateSetter:) set {}
+  }
+  static let sharedConstant = 2
+
+  var initContext = 4
+  var initContextRO: Int { return 4 }
+  var getterIsInit: Bool {
+    @objc(initGetter) get { return true }
+    set {}
+  }
+  var setterIsInit: Bool {
+    get { return true }
+    @objc(initSetter:) set {}
+  }
+
+  var customValueTypeProp: URL?
 }
 
 // CHECK-LABEL: @interface PropertiesOverridden
@@ -566,21 +637,33 @@ public class NonObjCClass { }
 }
 
 // CHECK-LABEL: @interface Throwing1
-// CHECK-NEXT: - (BOOL)method1AndReturnError:(NSError * _Nullable * _Null_unspecified)error;
-// CHECK-NEXT: - (Throwing1 * _Nullable)method2AndReturnError:(NSError * _Nullable * _Null_unspecified)error;
-// CHECK-NEXT: - (NSArray<NSString *> * _Nullable)method3:(NSInteger)x error:(NSError * _Nullable * _Null_unspecified)error;
-// CHECK-NEXT: - (nullable instancetype)method4AndReturnError:(NSError * _Nullable * _Null_unspecified)error;
-// CHECK-NEXT: - (nullable instancetype)initAndReturnError:(NSError * _Nullable * _Null_unspecified)error OBJC_DESIGNATED_INITIALIZER;
-// CHECK-NEXT: - (nullable instancetype)initWithString:(NSString * _Nonnull)string error:(NSError * _Nullable * _Null_unspecified)error OBJC_DESIGNATED_INITIALIZER;
-// CHECK-NEXT: - (nullable instancetype)initAndReturnError:(NSError * _Nullable * _Null_unspecified)error fn:(NSInteger (^ _Nonnull)(NSInteger))fn OBJC_DESIGNATED_INITIALIZER;
+// CHECK-NEXT: - (BOOL)method1AndReturnError:(NSError * _Nullable * _Nullable)error;
+// CHECK-NEXT: - (Throwing1 * _Nullable)method2AndReturnError:(NSError * _Nullable * _Nullable)error;
+// CHECK-NEXT: - (NSArray<NSString *> * _Nullable)method3:(NSInteger)x error:(NSError * _Nullable * _Nullable)error;
+// CHECK-NEXT: - (nullable instancetype)method4AndReturnError:(NSError * _Nullable * _Nullable)error;
+// CHECK-NEXT: - (nullable instancetype)initAndReturnError:(NSError * _Nullable * _Nullable)error OBJC_DESIGNATED_INITIALIZER;
+// CHECK-NEXT: - (nullable instancetype)initWithString:(NSString * _Nonnull)string error:(NSError * _Nullable * _Nullable)error OBJC_DESIGNATED_INITIALIZER;
+// CHECK-NEXT: - (nullable instancetype)initAndReturnError:(NSError * _Nullable * _Nullable)error fn:(NSInteger (^ _Nonnull)(NSInteger))fn OBJC_DESIGNATED_INITIALIZER;
 // CHECK-NEXT: @end
 @objc class Throwing1 {
   func method1() throws { }
   func method2() throws -> Throwing1 { return self }
-  func method3(x: Int) throws -> [String] { return [] }
+  func method3(_ x: Int) throws -> [String] { return [] }
   func method4() throws -> Self { return self }
 
   init() throws { }
   init(string: String) throws { }
-  init(fn: Int -> Int) throws { }
+  init(fn: (Int) -> Int) throws { }
 }
+
+@objc class Spoon: Fungible {}
+
+// CHECK-LABEL: @interface UsesImportedGenerics
+@objc class UsesImportedGenerics {
+  // CHECK: - (GenericClass<id> * _Nonnull)takeAndReturnGenericClass:(GenericClass<NSString *> * _Nullable)x;
+  @objc func takeAndReturnGenericClass(_ x: GenericClass<NSString>?) -> GenericClass<AnyObject> { fatalError("") }
+  // CHECK: - (FungibleContainer<id <Fungible>> * _Null_unspecified)takeAndReturnFungibleContainer:(FungibleContainer<Spoon *> * _Nonnull)x;
+  @objc func takeAndReturnFungibleContainer(_ x: FungibleContainer<Spoon>) -> FungibleContainer<Fungible>! { fatalError("") }
+}
+// CHECK: @end
+

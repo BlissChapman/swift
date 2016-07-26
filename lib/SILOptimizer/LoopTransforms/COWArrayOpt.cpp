@@ -745,7 +745,7 @@ bool COWArrayOpt::checkSafeArrayElementUse(SILInstruction *UseInst,
   //   $Builtin.NativeObject
   //   %60 = struct_extract %53 : $UnsafeMutablePointer<Int>,
   //   #UnsafeMutablePointer
-  //   %61 = pointer_to_address %60 : $Builtin.RawPointer to $*Int
+  //   %61 = pointer_to_address %60 : $Builtin.RawPointer to strict $*Int
   //   %62 = mark_dependence %61 : $*Int on %59 : $Builtin.NativeObject
   //
   // The struct_extract, unchecked_ref_cast is handled below in the
@@ -938,7 +938,7 @@ stripValueProjections(SILValue V,
 /// If we found a make_mutable call this means that check_subscript was removed
 /// by the array bounds check elimination pass.
 static SILInstruction *
-findPreceedingCheckSubscriptOrMakeMutable(ApplyInst *GetElementAddr) {
+findPrecedingCheckSubscriptOrMakeMutable(ApplyInst *GetElementAddr) {
   for (auto ReverseIt =
            SILBasicBlock::reverse_iterator(GetElementAddr->getIterator()),
             End = GetElementAddr->getParent()->rend();
@@ -1061,7 +1061,7 @@ private:
     // %132 = unchecked_ref_cast %131
     // %133 = enum $Optional<NativeObject>, #Optional.Some!enumelt.1, %132
     // %134 = struct_extract %129
-    // %135 = pointer_to_address %134 to $*Array<Int>
+    // %135 = pointer_to_address %134 to strict $*Array<Int>
     // %136 = mark_dependence %135 on %133
 
     auto *MarkDependence = dyn_cast<MarkDependenceInst>(M.getSelf());
@@ -1131,7 +1131,7 @@ private:
     // strong_release %120
     //
     // Find the check_subscript call.
-    auto *Check = findPreceedingCheckSubscriptOrMakeMutable(GetElementAddrCall);
+    auto *Check = findPrecedingCheckSubscriptOrMakeMutable(GetElementAddrCall);
     if (!Check)
       return false;
 

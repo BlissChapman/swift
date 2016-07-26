@@ -4,7 +4,6 @@
 #include "swift/Basic/SourceManager.h"
 #include "swift/Frontend/Frontend.h"
 #include "swift/Frontend/PrintingDiagnosticConsumer.h"
-#include "swift/IDE/SourceEntityWalker.h"
 #include "swift/IDE/CommentConversion.h"
 #include "swift/IDE/Utils.h"
 #include "swift/Markup/XMLUtils.h"
@@ -20,7 +19,8 @@
 using namespace swift;
 using namespace swift::ide;
 
-Optional<std::pair<unsigned, unsigned>> swift::ide::parseLineCol(StringRef LineCol) {
+Optional<std::pair<unsigned, unsigned>>
+swift::ide::parseLineCol(StringRef LineCol) {
   unsigned Line, Col;
   size_t ColonIdx = LineCol.find(':');
   if (ColonIdx == StringRef::npos) {
@@ -45,7 +45,7 @@ Optional<std::pair<unsigned, unsigned>> swift::ide::parseLineCol(StringRef LineC
 }
 
 void XMLEscapingPrinter::printText(StringRef Text) {
-  llvm::markup::appendWithXMLEscaping(OS, Text);
+  swift::markup::appendWithXMLEscaping(OS, Text);
 }
 
 void XMLEscapingPrinter::printXML(StringRef Text) {
@@ -58,12 +58,12 @@ SourceManager &SemaLocResolver::getSourceMgr() const
 }
 
 bool SemaLocResolver::tryResolve(ValueDecl *D, TypeDecl *CtorTyRef,
-                SourceLoc Loc, bool IsRef, Type Ty) {
+                                 SourceLoc Loc, bool IsRef, Type Ty) {
   if (!D->hasName())
     return false;
 
   if (Loc == LocToResolve) {
-    SemaTok = { D, CtorTyRef, Loc, IsRef, Ty };
+    SemaTok = { D, CtorTyRef, Loc, IsRef, Ty, ContainerType };
     return true;
   }
   return false;
@@ -137,6 +137,22 @@ bool SemaLocResolver::visitDeclReference(ValueDecl *D, CharSourceRange Range,
   if (isDone())
     return false;
   return !tryResolve(D, CtorTyRef, Range.getStart(), /*IsRef=*/true, T);
+}
+
+bool SemaLocResolver::walkToExprPre(Expr *E) {
+  if (!isDone()) {
+    if (auto SAE = dyn_cast<SelfApplyExpr>(E)) {
+      if (SAE->getFn()->getStartLoc() == LocToResolve) {
+        ContainerType = SAE->getBase()->getType();
+      }
+    } else if (auto ME = dyn_cast<MemberRefExpr>(E)) {
+      SourceLoc DotLoc = ME->getDotLoc();
+      if (DotLoc.isValid() && DotLoc.getAdvancedLoc(1) == LocToResolve) {
+        ContainerType = ME->getBase()->getType();
+      }
+    }
+  }
+  return true;
 }
 
 bool SemaLocResolver::visitCallArgName(Identifier Name, CharSourceRange Range,

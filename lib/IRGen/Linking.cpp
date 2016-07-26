@@ -66,6 +66,15 @@ static StringRef mangleValueWitness(ValueWitness witness) {
   llvm_unreachable("bad witness kind");
 }
 
+/// Mangle this entity as a std::string.
+std::string LinkEntity::mangleAsString() const {
+  std::string result; {
+    llvm::raw_string_ostream stream(result);
+    mangle(stream);
+  }
+  return result;
+}
+
 /// Mangle this entity into the given buffer.
 void LinkEntity::mangle(SmallVectorImpl<char> &buffer) const {
   llvm::raw_svector_ostream stream(buffer);
@@ -139,15 +148,13 @@ void LinkEntity::mangle(raw_ostream &buffer) const {
   //   global ::= 'Mm' type                       // class metaclass
   case Kind::SwiftMetaclassStub:
     mangler.append("_TMm");
-    mangler.mangleNominalType(cast<ClassDecl>(getDecl()),
-                              Mangler::BindGenerics::None);
+    mangler.mangleNominalType(cast<ClassDecl>(getDecl()));
     return mangler.finalize(buffer);
 
   //   global ::= 'Mn' type                       // nominal type descriptor
   case Kind::NominalTypeDescriptor:
     mangler.append("_TMn");
-    mangler.mangleNominalType(cast<NominalTypeDecl>(getDecl()),
-                              Mangler::BindGenerics::None);
+    mangler.mangleNominalType(cast<NominalTypeDecl>(getDecl()));
     return mangler.finalize(buffer);
 
   //   global ::= 'Mp' type                       // protocol descriptor
@@ -263,7 +270,7 @@ void LinkEntity::mangle(raw_ostream &buffer) const {
 
     mangler.append("_T");
     if (auto type = dyn_cast<NominalTypeDecl>(getDecl())) {
-      mangler.mangleNominalType(type, Mangler::BindGenerics::None);
+      mangler.mangleNominalType(type);
     } else if (auto ctor = dyn_cast<ConstructorDecl>(getDecl())) {
       // FIXME: Hack. LinkInfo should be able to refer to the allocating
       // constructor rather than inferring it here.
@@ -273,6 +280,16 @@ void LinkEntity::mangle(raw_ostream &buffer) const {
       mangler.mangleEntity(getDecl(), getUncurryLevel());
     }
       return mangler.finalize(buffer);
+
+  // An Objective-C class reference reference. The symbol is private, so
+  // the mangling is unimportant; it should just be readable in LLVM IR.
+  case Kind::ObjCClassRef: {
+    mangler.append("OBJC_CLASS_REF_$_");
+    llvm::SmallString<64> tempBuffer;
+    StringRef name = cast<ClassDecl>(getDecl())->getObjCRuntimeName(tempBuffer);
+    mangler.append(name);
+    return mangler.finalize(buffer);
+  }
 
   // An Objective-C class reference;  not a swift mangling.
   case Kind::ObjCClass: {

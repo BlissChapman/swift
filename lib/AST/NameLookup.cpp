@@ -174,6 +174,13 @@ bool swift::removeShadowedDecls(SmallVectorImpl<ValueDecl*> &decls,
 
     signature = decl->getType()->getCanonicalType();
 
+    // FIXME: The type of a variable or subscript doesn't include
+    // enough context to distinguish entities from different
+    // constrained extensions, so use the overload signature's
+    // type. This is layering a partial fix upon a total hack.
+    if (auto asd = dyn_cast<AbstractStorageDecl>(decl))
+      signature = asd->getOverloadSignature().InterfaceType;
+
     // If we've seen a declaration with this signature before, note it.
     auto &knownDecls =
         CollidingDeclGroups[std::make_pair(signature, decl->getName())];
@@ -322,7 +329,7 @@ bool swift::removeShadowedDecls(SmallVectorImpl<ValueDecl*> &decls,
 
 static bool matchesDiscriminator(Identifier discriminator,
                                  const ValueDecl *value) {
-  if (value->getFormalAccess() != Accessibility::Private)
+  if (value->getFormalAccess() > Accessibility::FilePrivate)
     return false;
 
   auto containingFile =
@@ -385,11 +392,13 @@ UnqualifiedLookup::UnqualifiedLookup(DeclName Name, DeclContext *DC,
   const SourceManager &SM = Ctx.SourceMgr;
   DebuggerClient *DebugClient = M.getDebugClient();
 
-  NamedDeclConsumer Consumer(Name, Results);
+  NamedDeclConsumer Consumer(Name, Results, IsTypeLookup);
 
   Optional<bool> isCascadingUse;
   if (IsKnownNonCascading)
     isCascadingUse = false;
+
+  SmallVector<UnqualifiedLookupResult, 4> UnavailableInnerResults;
 
   // Never perform local lookup for operators.
   if (Name.isOperator()) {
@@ -434,8 +443,7 @@ UnqualifiedLookup::UnqualifiedLookup(DeclName Name, DeclContext *DC,
 
         if (AFD->getExtensionType()) {
           if (AFD->getDeclContext()->getAsProtocolOrProtocolExtensionContext()) {
-            ExtendedType = AFD->getDeclContext()->getProtocolSelf()
-                             ->getArchetype();
+            ExtendedType = AFD->getDeclContext()->getSelfTypeInContext();
 
             // Fallback path.
             if (!ExtendedType)
@@ -479,11 +487,7 @@ UnqualifiedLookup::UnqualifiedLookup(DeclName Name, DeclContext *DC,
         if (!isCascadingUse.hasValue())
           isCascadingUse = ACE->isCascadingContextForLookup(false);
       } else if (ExtensionDecl *ED = dyn_cast<ExtensionDecl>(DC)) {
-        if (ED->getAsProtocolOrProtocolExtensionContext()) {
-          ExtendedType = ED->getProtocolSelf()->getArchetype();
-        } else {
-          ExtendedType = ED->getExtendedType();
-        }
+        ExtendedType = ED->getSelfTypeInContext();
 
         BaseDecl = ED->getAsNominalTypeOrNominalTypeExtensionContext();
         MetaBaseDecl = BaseDecl;
@@ -520,7 +524,7 @@ UnqualifiedLookup::UnqualifiedLookup(DeclName Name, DeclContext *DC,
         if (TypeResolver)
           TypeResolver->resolveDeclSignature(BaseDecl);
 
-        unsigned options = NL_UnqualifiedDefault;
+        NLOptions options = NL_UnqualifiedDefault;
         if (isCascadingUse.getValue())
           options |= NL_KnownCascadingDependency;
         else
@@ -528,6 +532,8 @@ UnqualifiedLookup::UnqualifiedLookup(DeclName Name, DeclContext *DC,
 
         if (AllowProtocolMembers)
           options |= NL_ProtocolMembers;
+        if (IsTypeLookup)
+          options |= NL_OnlyTypes;
 
         if (!ExtendedType)
           ExtendedType = ErrorType::get(Ctx);
@@ -557,7 +563,7 @@ UnqualifiedLookup::UnqualifiedLookup(DeclName Name, DeclContext *DC,
             if (FD->isStatic() && !isMetatypeType)
               continue;
           } else if (isa<EnumElementDecl>(Result)) {
-            Results.push_back(UnqualifiedLookupResult(MetaBaseDecl, Result));
+            Results.push_back(UnqualifiedLookupResult(BaseDecl, Result));
             continue;
           }
 
@@ -565,9 +571,25 @@ UnqualifiedLookup::UnqualifiedLookup(DeclName Name, DeclContext *DC,
         }
 
         if (FoundAny) {
-          if (DebugClient)
-            filterForDiscriminator(Results, DebugClient);
-          return;
+          // Predicate that determines whether a lookup result should
+          // be unavailable except as a last-ditch effort.
+          auto unavailableLookupResult =
+            [&](const UnqualifiedLookupResult &result) {
+            return result.getValueDecl()->getAttrs()
+                     .isUnavailableInCurrentSwift();
+          };
+
+          // If all of the results we found are unavailable, keep looking.
+          if (std::all_of(Results.begin(), Results.end(),
+                          unavailableLookupResult)) {
+            UnavailableInnerResults.append(Results.begin(), Results.end());
+            Results.clear();
+            FoundAny = false;
+          } else {
+            if (DebugClient)
+              filterForDiscriminator(Results, DebugClient);
+            return;
+          }
         }
 
         // Check the generic parameters if our context is a generic type or
@@ -640,6 +662,14 @@ UnqualifiedLookup::UnqualifiedLookup(DeclName Name, DeclContext *DC,
   // If we've found something, we're done.
   if (!Results.empty())
     return;
+
+  // If we still haven't found anything, but we do have some
+  // declarations that are "unavailable in the current Swift", drop
+  // those in.
+  if (!UnavailableInnerResults.empty()) {
+    Results = std::move(UnavailableInnerResults);
+    return;
+  }
 
   if (!Name.isSimpleName())
     return;
@@ -989,6 +1019,8 @@ static bool checkAccessibility(const DeclContext *useDC,
 
   switch (access) {
   case Accessibility::Private:
+    // TODO: Implement 'private'.
+  case Accessibility::FilePrivate:
     return useDC->getModuleScopeContext() == sourceDC->getModuleScopeContext();
   case Accessibility::Internal: {
     const Module *sourceModule = sourceDC->getParentModule();
@@ -1024,7 +1056,7 @@ bool AbstractStorageDecl::isSetterAccessibleFrom(const DeclContext *DC) const {
 
 bool DeclContext::lookupQualified(Type type,
                                   DeclName member,
-                                  unsigned options,
+                                  NLOptions options,
                                   LazyResolver *typeResolver,
                                   SmallVectorImpl<ValueDecl *> &decls) const {
   using namespace namelookup;
@@ -1034,7 +1066,7 @@ bool DeclContext::lookupQualified(Type type,
     return false;
 
   auto checkLookupCascading = [this, options]() -> Optional<bool> {
-    switch (options & NL_KnownDependencyMask) {
+    switch (static_cast<unsigned>(options & NL_KnownDependencyMask)) {
     case 0:
       return isCascadingContextForLookup(/*excludeFunctions=*/false);
     case NL_KnownNonCascadingDependency:
@@ -1097,9 +1129,13 @@ bool DeclContext::lookupQualified(Type type,
     llvm::SmallPtrSet<ValueDecl *, 4> knownDecls;
     decls.erase(std::remove_if(decls.begin(), decls.end(),
                                [&](ValueDecl *vd) -> bool {
-                                 return !knownDecls.insert(vd).second;
-                               }),
-                decls.end());
+      // If we're performing a type lookup, don't even attempt to validate
+      // the decl if its not a type.
+      if ((options & NL_OnlyTypes) && !isa<TypeDecl>(vd))
+        return true;
+
+      return !knownDecls.insert(vd).second;
+    }), decls.end());
 
     if (auto *debugClient = topLevelScope->getParentModule()->getDebugClient())
       filterForDiscriminator(decls, debugClient);
@@ -1236,6 +1272,11 @@ bool DeclContext::lookupQualified(Type type,
     // Look for results within the current nominal type and its extensions.
     bool currentIsProtocol = isa<ProtocolDecl>(current);
     for (auto decl : current->lookupDirect(member)) {
+      // If we're performing a type lookup, don't even attempt to validate
+      // the decl if its not a type.
+      if ((options & NL_OnlyTypes) && !isa<TypeDecl>(decl))
+        continue;
+
       // Resolve the declaration signature when we find the
       // declaration.
       if (typeResolver && !decl->isBeingTypeChecked()) {
@@ -1308,6 +1349,17 @@ bool DeclContext::lookupQualified(Type type,
     // already visited above, add it to the list of declarations.
     llvm::SmallPtrSet<ValueDecl *, 4> knownDecls;
     for (auto decl : allDecls) {
+      // If we're performing a type lookup, don't even attempt to validate
+      // the decl if its not a type.
+      if ((options & NL_OnlyTypes) && !isa<TypeDecl>(decl))
+        continue;
+
+      if (typeResolver && !decl->isBeingTypeChecked()) {
+        typeResolver->resolveDeclSignature(decl);
+        if (!decl->hasType())
+          continue;
+      }
+
       // If the declaration has an override, name lookup will also have
       // found the overridden method. Skip this declaration, because we
       // prefer the overridden method.
@@ -1324,7 +1376,8 @@ bool DeclContext::lookupQualified(Type type,
 
       // If we didn't visit this nominal type above, add this
       // declaration to the list.
-      if (!visited.count(nominal) && knownDecls.insert(decl).second)
+      if (!visited.count(nominal) && knownDecls.insert(decl).second &&
+          isAcceptableDecl(nominal, decl))
         decls.push_back(decl);
     }
   }

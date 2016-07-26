@@ -52,7 +52,6 @@
 
 using namespace swift;
 using namespace irgen;
-using clang::CodeGen::CodeGenABITypes;
 using llvm::Attribute;
 
 const unsigned DefaultAS = 0;
@@ -88,16 +87,18 @@ static clang::CodeGenerator *createClangCodeGenerator(ASTContext &Context,
   CGO.DisableFPElim = Opts.DisableFPElim;
   switch (Opts.DebugInfoKind) {
   case IRGenDebugInfoKind::None:
-    CGO.setDebugInfo(clang::CodeGenOptions::DebugInfoKind::NoDebugInfo);
+    CGO.setDebugInfo(clang::codegenoptions::DebugInfoKind::NoDebugInfo);
     break;
   case IRGenDebugInfoKind::LineTables:
-    CGO.setDebugInfo(clang::CodeGenOptions::DebugInfoKind::DebugLineTablesOnly);
+    CGO.setDebugInfo(clang::codegenoptions::DebugInfoKind::DebugLineTablesOnly);
     break;
- case IRGenDebugInfoKind::Normal:
-    CGO.setDebugInfo(clang::CodeGenOptions::DebugInfoKind::FullDebugInfo);
+  case IRGenDebugInfoKind::ASTTypes:
+    // TODO: Enable -gmodules for the clang code generator.
+  case IRGenDebugInfoKind::DwarfTypes:
+    CGO.setDebugInfo(clang::codegenoptions::DebugInfoKind::FullDebugInfo);
     break;
   }
-  if (Opts.DebugInfoKind != IRGenDebugInfoKind::None) {
+  if (Opts.DebugInfoKind > IRGenDebugInfoKind::None) {
     CGO.DebugCompilationDir = Opts.DebugCompilationDir;
     CGO.DwarfVersion = Opts.DWARFVersion;
     CGO.DwarfDebugFlags = Opts.DWARFDebugFlags;
@@ -114,35 +115,38 @@ static clang::CodeGenerator *createClangCodeGenerator(ASTContext &Context,
   return ClangCodeGen;
 }
 
-IRGenModule::IRGenModule(IRGenModuleDispatcher &dispatcher, SourceFile *SF,
-                         ASTContext &Context,
+IRGenModule::IRGenModule(IRGenerator &irgen,
+                         std::unique_ptr<llvm::TargetMachine> &&target,
+                         SourceFile *SF,
                          llvm::LLVMContext &LLVMContext,
-                         IRGenOptions &Opts, StringRef ModuleName,
-                         const llvm::DataLayout &DataLayout,
-                         const llvm::Triple &Triple,
-                         llvm::TargetMachine *TargetMachine,
-                         SILModule *SILMod,
+                         StringRef ModuleName,
                          StringRef OutputFilename)
-  : Context(Context), Opts(Opts),
-    ClangCodeGen(createClangCodeGenerator(Context, LLVMContext, Opts, ModuleName)),
+  : IRGen(irgen),
+    Context(irgen.SIL.getASTContext()),
+    ClangCodeGen(createClangCodeGenerator(Context, LLVMContext,
+                                          irgen.Opts, ModuleName)),
     Module(*ClangCodeGen->GetModule()),
-    LLVMContext(Module.getContext()), DataLayout(DataLayout),
-    Triple(Triple), TargetMachine(TargetMachine),
-    SILMod(SILMod), OutputFilename(OutputFilename), dispatcher(dispatcher),
+    LLVMContext(Module.getContext()),
+    DataLayout(target->createDataLayout()),
+    Triple(Context.LangOpts.Target),
+    TargetMachine(std::move(target)),
+    OutputFilename(OutputFilename),
     TargetInfo(SwiftTargetInfo::get(*this)),
     DebugInfo(0), ModuleHash(nullptr),
     ObjCInterop(Context.LangOpts.EnableObjCInterop),
     Types(*new TypeConverter(*this))
 {
-  dispatcher.addGenModule(SF, this);
+  irgen.addGenModule(SF, this);
+
+  auto &opts = irgen.Opts;
 
   // If the command line contains an explicit request about whether to add
   // LLVM value names, honor it.  Otherwise, add value names only if the
   // final result is textual LLVM assembly.
-  if (Opts.HasValueNamesSetting) {
-    EnableValueNames = Opts.ValueNames;
+  if (opts.HasValueNamesSetting) {
+    EnableValueNames = opts.ValueNames;
   } else {
-    EnableValueNames = (Opts.OutputKind == IRGenOutputKind::LLVMAssembly);
+    EnableValueNames = (opts.OutputKind == IRGenOutputKind::LLVMAssembly);
   }
   
   VoidTy = llvm::Type::getVoidTy(getLLVMContext());
@@ -258,6 +262,7 @@ IRGenModule::IRGenModule(IRGenModuleDispatcher &dispatcher, SourceFile *SF,
     WitnessTablePtrTy,
     TypeMetadataStructTy,
     Int32Ty,
+    CaptureDescriptorPtrTy,
   });
   FullBoxMetadataPtrTy = FullBoxMetadataStructTy->getPointerTo(DefaultAS);
 
@@ -270,6 +275,10 @@ IRGenModule::IRGenModule(IRGenModuleDispatcher &dispatcher, SourceFile *SF,
   FunctionPairTy = createStructType(*this, "swift.function", {
     FunctionPtrTy,
     RefCountedPtrTy,
+  });
+  WitnessFunctionPairTy = createStructType(*this, "swift.function", {
+    FunctionPtrTy,
+    WitnessTablePtrTy,
   });
   
   OpaquePtrTy = llvm::StructType::create(LLVMContext, "swift.opaque")
@@ -375,17 +384,14 @@ IRGenModule::IRGenModule(IRGenModuleDispatcher &dispatcher, SourceFile *SF,
 
   // Only use the new calling conventions on platforms that support it.
   auto Arch = Triple.getArch();
-  if (Arch == llvm::Triple::ArchType::x86_64 ||
+  if (SWIFT_RT_USE_RegisterPreservingCC &&
       Arch == llvm::Triple::ArchType::aarch64)
     RegisterPreservingCC = SWIFT_LLVM_CC(RegisterPreservingCC);
   else
     RegisterPreservingCC = DefaultCC;
 
-  ABITypes = new CodeGenABITypes(clangASTContext, Module);
-
-  if (Opts.DebugInfoKind != IRGenDebugInfoKind::None) {
-    DebugInfo = new IRGenDebugInfo(Opts, *CI, *this, Module, SF);
-  }
+  if (IRGen.Opts.DebugInfoKind > IRGenDebugInfoKind::None)
+    DebugInfo = new IRGenDebugInfo(IRGen.Opts, *CI, *this, Module, SF);
 
   initClangTypeConverter();
 }
@@ -393,9 +399,7 @@ IRGenModule::IRGenModule(IRGenModuleDispatcher &dispatcher, SourceFile *SF,
 IRGenModule::~IRGenModule() {
   destroyClangTypeConverter();
   delete &Types;
-  if (DebugInfo)
-    delete DebugInfo;
-  delete ABITypes;
+  delete DebugInfo;
 }
 
 static bool isReturnAttribute(llvm::Attribute::AttrKind Attr);
@@ -446,6 +450,11 @@ llvm::Constant *swift::getRuntimeFn(llvm::Module &Module,
   // Add any function attributes and set the calling convention.
   if (auto fn = dyn_cast<llvm::Function>(cache)) {
     fn->setCallingConv(cc);
+
+    if (llvm::Triple(Module.getTargetTriple()).isOSBinFormatCOFF() &&
+        (fn->getLinkage() == llvm::GlobalValue::ExternalLinkage ||
+         fn->getLinkage() == llvm::GlobalValue::AvailableExternallyLinkage))
+      fn->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
 
     llvm::AttrBuilder buildFnAttr;
     llvm::AttrBuilder buildRetAttr;
@@ -505,6 +514,7 @@ llvm::Constant *swift::getWrapperFn(llvm::Module &Module,
     // and leave only one copy.
     fun->setLinkage(llvm::Function::LinkOnceODRLinkage);
     fun->setVisibility(llvm::Function::HiddenVisibility);
+    fun->setDLLStorageClass(llvm::Function::DefaultStorageClass);
     fun->setDoesNotThrow();
 
     // Add the body of a wrapper.
@@ -521,6 +531,8 @@ llvm::Constant *swift::getWrapperFn(llvm::Module &Module,
     auto *globalFnPtr =
         new llvm::GlobalVariable(Module, fnPtrTy, false,
                                  llvm::GlobalValue::ExternalLinkage, 0, symbol);
+    if (llvm::Triple(Module.getTargetTriple()).isOSBinFormatCOFF())
+      globalFnPtr->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
 
     // Forward all arguments.
     llvm::SmallVector<llvm::Value *, 4> args;
@@ -635,17 +647,25 @@ llvm::Constant *IRGenModule::getEmptyTupleMetadata() {
   if (EmptyTupleMetadata)
     return EmptyTupleMetadata;
 
-  return EmptyTupleMetadata =
-    Module.getOrInsertGlobal("_TMT_", FullTypeMetadataStructTy);
+  EmptyTupleMetadata =
+      Module.getOrInsertGlobal("_TMT_", FullTypeMetadataStructTy);
+  if (Triple.isOSBinFormatCOFF())
+    cast<llvm::GlobalVariable>(EmptyTupleMetadata)
+        ->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
+  return EmptyTupleMetadata;
 }
 
 llvm::Constant *IRGenModule::getObjCEmptyCachePtr() {
-  if (ObjCEmptyCachePtr) return ObjCEmptyCachePtr;
+  if (ObjCEmptyCachePtr)
+    return ObjCEmptyCachePtr;
 
   if (ObjCInterop) {
     // struct objc_cache _objc_empty_cache;
     ObjCEmptyCachePtr = Module.getOrInsertGlobal("_objc_empty_cache",
                                                  OpaquePtrTy->getElementType());
+    if (Triple.isOSBinFormatCOFF())
+      cast<llvm::GlobalVariable>(ObjCEmptyCachePtr)
+          ->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
   } else {
     // FIXME: Remove even the null value per rdar://problem/18801263
     ObjCEmptyCachePtr = llvm::ConstantPointerNull::get(OpaquePtrTy);
@@ -675,9 +695,20 @@ Address IRGenModule::getAddrOfObjCISAMask() {
   // isa masking.
   assert(TargetInfo.hasISAMasking());
   if (!ObjCISAMaskPtr) {
-    ObjCISAMaskPtr =  Module.getOrInsertGlobal("swift_isaMask", IntPtrTy);
+    ObjCISAMaskPtr = Module.getOrInsertGlobal("swift_isaMask", IntPtrTy);
+    if (Triple.isOSBinFormatCOFF())
+      cast<llvm::GlobalVariable>(ObjCISAMaskPtr)
+          ->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
   }
   return Address(ObjCISAMaskPtr, getPointerAlignment());
+}
+
+ModuleDecl *IRGenModule::getSwiftModule() const {
+  return IRGen.SIL.getSwiftModule();
+}
+
+Lowering::TypeConverter &IRGenModule::getSILTypes() const {
+  return IRGen.SIL.Types;
 }
 
 llvm::Module *IRGenModule::getModule() const {
@@ -704,7 +735,7 @@ llvm::AttributeSet IRGenModule::getAllocAttrs() {
 llvm::AttributeSet IRGenModule::constructInitialAttributes() {
   llvm::AttributeSet attrsUpdated;
   // Add DisableFPElim. 
-  if (!Opts.DisableFPElim) {
+  if (!IRGen.Opts.DisableFPElim) {
     attrsUpdated = attrsUpdated.addAttribute(LLVMContext,
                      llvm::AttributeSet::FunctionIndex,
                      "no-frame-pointer-elim", "false");
@@ -768,25 +799,54 @@ static StringRef encodeForceLoadSymbolName(llvm::SmallVectorImpl<char> &buf,
   return os.str();
 }
 
+llvm::SmallString<32> getTargetDependentLibraryOption(const llvm::Triple &T,
+                                                      StringRef library) {
+  llvm::SmallString<32> buffer;
+
+  if (T.isWindowsMSVCEnvironment() || T.isWindowsItaniumEnvironment()) {
+    bool quote = library.find(' ') != StringRef::npos;
+
+    buffer += "/DEFAULTLIB:";
+    if (quote)
+      buffer += '"';
+    buffer += library;
+    if (!library.endswith_lower(".lib"))
+      buffer += ".lib";
+    if (quote)
+      buffer += '"';
+  } else if (T.isPS4()) {
+    bool quote = library.find(' ') != StringRef::npos;
+
+    buffer += "\01";
+    if (quote)
+      buffer += '"';
+    buffer += library;
+    if (quote)
+      buffer += '"';
+  } else {
+    buffer += "-l";
+    buffer += library;
+  }
+
+  return buffer;
+}
+
 void IRGenModule::addLinkLibrary(const LinkLibrary &linkLib) {
   llvm::LLVMContext &ctx = Module.getContext();
 
   switch (linkLib.getKind()) {
   case LibraryKind::Library: {
-    // FIXME: Use target-independent linker option.
-    // Clang uses CGM.getTargetCodeGenInfo().getDependentLibraryOption(...).
-    llvm::SmallString<32> buf;
-    buf += "-l";
-    buf += linkLib.getName();
-    auto flag = llvm::MDString::get(ctx, buf);
-    AutolinkEntries.push_back(llvm::MDNode::get(ctx, flag));
+    llvm::SmallString<32> opt =
+        getTargetDependentLibraryOption(Triple, linkLib.getName());
+    AutolinkEntries.push_back(
+        llvm::MDNode::get(ctx, llvm::MDString::get(ctx, opt)));
     break;
   }
-  case LibraryKind::Framework:
+  case LibraryKind::Framework: {
     // If we're supposed to disable autolinking of this framework, bail out.
-    if (std::find(Opts.DisableAutolinkFrameworks.begin(),
-                  Opts.DisableAutolinkFrameworks.end(),
-                  linkLib.getName()) != Opts.DisableAutolinkFrameworks.end())
+    auto &frameworks = IRGen.Opts.DisableAutolinkFrameworks;
+    if (std::find(frameworks.begin(), frameworks.end(), linkLib.getName())
+          != frameworks.end())
       return;
 
     llvm::Metadata *args[] = {
@@ -796,14 +856,18 @@ void IRGenModule::addLinkLibrary(const LinkLibrary &linkLib) {
     AutolinkEntries.push_back(llvm::MDNode::get(ctx, args));
     break;
   }
+  }
 
   if (linkLib.shouldForceLoad()) {
     llvm::SmallString<64> buf;
     encodeForceLoadSymbolName(buf, linkLib.getName());
     auto symbolAddr = Module.getOrInsertGlobal(buf.str(), Int1Ty);
+    if (Triple.isOSBinFormatCOFF())
+      cast<llvm::GlobalVariable>(symbolAddr)
+          ->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
 
     buf += "_$";
-    appendEncodedName(buf, Opts.ModuleName);
+    appendEncodedName(buf, IRGen.Opts.ModuleName);
 
     if (!Module.getGlobalVariable(buf.str())) {
       auto ref = new llvm::GlobalVariable(Module, symbolAddr->getType(),
@@ -849,12 +913,9 @@ void IRGenModule::emitAutolinkInfo() {
 
   // Collect the linker options already in the module (from ClangCodeGen).
   auto *LinkerOptions = Module.getModuleFlag(LinkerOptionsFlagName);
-  if (LinkerOptions) {
-    for (auto &LinkOption : cast<llvm::MDNode>(LinkerOptions)->operands()) {
-      LinkOption->dump();
+  if (LinkerOptions)
+    for (const auto &LinkOption : cast<llvm::MDNode>(LinkerOptions)->operands())
       AutolinkEntries.push_back(LinkOption);
-    }
-  }
 
   // Remove duplicates.
   llvm::SmallPtrSet<llvm::Metadata*, 4> knownAutolinkEntries;
@@ -866,8 +927,9 @@ void IRGenModule::emitAutolinkInfo() {
                                        }),
                         AutolinkEntries.end());
 
-  switch (TargetInfo.OutputObjectFormat) {
-  case llvm::Triple::MachO: {
+  if (TargetInfo.OutputObjectFormat == llvm::Triple::COFF ||
+      TargetInfo.OutputObjectFormat == llvm::Triple::MachO ||
+      Triple.isPS4()) {
     llvm::LLVMContext &ctx = Module.getContext();
 
     if (!LinkerOptions) {
@@ -883,10 +945,10 @@ void IRGenModule::emitAutolinkInfo() {
       (void)FoundOldEntry;
       assert(FoundOldEntry && "Could not replace old linker options entry?");
     }
-    break;
-  }
-  case llvm::Triple::COFF:
-  case llvm::Triple::ELF: {
+  } else {
+    assert(TargetInfo.OutputObjectFormat == llvm::Triple::ELF &&
+           "expected ELF output format");
+
     // Merge the entries into null-separated string.
     llvm::SmallString<64> EntriesString;
     for (auto &EntryNode : AutolinkEntries) {
@@ -898,31 +960,28 @@ void IRGenModule::emitAutolinkInfo() {
       }
     }
     auto EntriesConstant = llvm::ConstantDataArray::getString(
-      LLVMContext, EntriesString, /*AddNull=*/false);
+        LLVMContext, EntriesString, /*AddNull=*/false);
 
-    auto var = new llvm::GlobalVariable(*getModule(), 
-                                        EntriesConstant->getType(), true,
-                                        llvm::GlobalValue::PrivateLinkage,
-                                        EntriesConstant, 
-                                        "_swift1_autolink_entries");
+    auto var =
+        new llvm::GlobalVariable(*getModule(), EntriesConstant->getType(), true,
+                                 llvm::GlobalValue::PrivateLinkage,
+                                 EntriesConstant, "_swift1_autolink_entries");
     var->setSection(".swift1_autolink_entries");
     var->setAlignment(getPointerAlignment().getValue());
 
     addUsedGlobal(var);
-    break;
-  }
-  default:
-    llvm_unreachable("Don't know how to emit autolink entries for "
-                     "the selected object format.");
   }
 
-  if (!Opts.ForceLoadSymbolName.empty()) {
+  if (!IRGen.Opts.ForceLoadSymbolName.empty()) {
     llvm::SmallString<64> buf;
-    encodeForceLoadSymbolName(buf, Opts.ForceLoadSymbolName);
-    (void)new llvm::GlobalVariable(Module, Int1Ty, /*constant=*/false,
-                                   llvm::GlobalValue::CommonLinkage,
-                                   llvm::Constant::getNullValue(Int1Ty),
-                                   buf.str());
+    encodeForceLoadSymbolName(buf, IRGen.Opts.ForceLoadSymbolName);
+    auto symbol =
+        new llvm::GlobalVariable(Module, Int1Ty, /*constant=*/false,
+                                 llvm::GlobalValue::CommonLinkage,
+                                 llvm::Constant::getNullValue(Int1Ty),
+                                 buf.str());
+    if (Triple.isOSBinFormatCOFF())
+      symbol->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
   }
 }
 
@@ -954,9 +1013,9 @@ void IRGenModule::cleanupClangCodeGenMetadata() {
                          (uint32_t)(swiftVersion << 8));
 }
 
-void IRGenModule::finalize() {
+bool IRGenModule::finalize() {
   const char *ModuleHashVarName = "llvm.swift_module_hash";
-  if (Opts.OutputKind == IRGenOutputKind::ObjectFile &&
+  if (IRGen.Opts.OutputKind == IRGenOutputKind::ObjectFile &&
       !Module.getGlobalVariable(ModuleHashVarName)) {
     // Create a global variable into which we will store the hash of the
     // module (used for incremental compilation).
@@ -985,11 +1044,21 @@ void IRGenModule::finalize() {
     addUsedGlobal(ModuleHash);
   }
   emitLazyPrivateDefinitions();
+
+  // Finalize clang IR-generation.
+  finalizeClangCodeGen();
+
+  // If that failed, report failure up and skip the final clean-up.
+  if (!ClangCodeGen->GetModule())
+    return false;
+
   emitAutolinkInfo();
   emitGlobalLists();
   if (DebugInfo)
     DebugInfo->finalize();
   cleanupClangCodeGenMetadata();
+
+  return true;
 }
 
 /// Emit lazy definitions that have to be emitted in this specific
@@ -1014,7 +1083,7 @@ void IRGenModule::error(SourceLoc loc, const Twine &message) {
                          message.toStringRef(buffer));
 }
 
-void IRGenModuleDispatcher::addGenModule(SourceFile *SF, IRGenModule *IGM) {
+void IRGenerator::addGenModule(SourceFile *SF, IRGenModule *IGM) {
   assert(GenModules.count(SF) == 0);
   GenModules[SF] = IGM;
   if (!PrimaryIGM) {
@@ -1023,7 +1092,7 @@ void IRGenModuleDispatcher::addGenModule(SourceFile *SF, IRGenModule *IGM) {
   Queue.push_back(IGM);
 }
 
-IRGenModule *IRGenModuleDispatcher::getGenModule(DeclContext *ctxt) {
+IRGenModule *IRGenerator::getGenModule(DeclContext *ctxt) {
   if (GenModules.size() == 1 || !ctxt) {
     return getPrimaryIGM();
   }
@@ -1036,7 +1105,7 @@ IRGenModule *IRGenModuleDispatcher::getGenModule(DeclContext *ctxt) {
   return IGM;
 }
 
-IRGenModule *IRGenModuleDispatcher::getGenModule(SILFunction *f) {
+IRGenModule *IRGenerator::getGenModule(SILFunction *f) {
   if (GenModules.size() == 1) {
     return getPrimaryIGM();
   }

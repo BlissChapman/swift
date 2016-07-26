@@ -8,16 +8,10 @@
 
 import StdlibUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 var CommandLineArguments = TestSuite("CommandLineArguments")
 CommandLineArguments.test("printCommandLineArguments") {
-  debugPrint(Process.arguments)
+  debugPrint(CommandLine.arguments)
 }
 // CHECK-EMPTY: {{^}}stdout>>> ["{{[^"]+}}", "--stdlib-unittest-run-child"]{{$}}
 // CHECK-1: {{^}}stdout>>> ["{{[^"]+}}", "--stdlib-unittest-run-child", "--abc"]{{$}}

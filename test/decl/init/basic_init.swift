@@ -5,12 +5,12 @@ class Foo {
 }
 
 class C {
-	var triangle : triangle  // expected-error {{'triangle' used within its own type}} expected-error{{use of undeclared type 'triangle'}}
+	var triangle : triangle  // expected-error{{use of undeclared type 'triangle'}}
 
 	init() {}
 }
 
-typealias t = t // expected-error {{circular reference}}
+typealias t = t // expected-error {{redundant type alias declaration}}{{1-17=}}
 
 
 

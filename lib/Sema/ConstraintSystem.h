@@ -615,9 +615,14 @@ public:
   /// on a suspicious top-level optional injection (because the caller already
   /// diagnosed it).
   ///
+  /// \param typeFromPattern Optionally, the caller can specify the pattern
+  /// from where the toType is derived, so that we can deliver better fixit.
+  ///
   /// \returns the coerced expression, which will have type \c ToType.
-  Expr *coerceToType(Expr *expr, Type toType, ConstraintLocator *locator,
-                     bool ignoreTopLevelInjection = false) const;
+  Expr *coerceToType(Expr *expr, Type toType,
+                     ConstraintLocator *locator,
+                     bool ignoreTopLevelInjection = false,
+                     Optional<Pattern*> typeFromPattern = None) const;
 
   /// \brief Convert the given expression to a logic value.
   ///
@@ -688,6 +693,10 @@ public:
 
   /// \brief Retrieve the fixed type for the given type variable.
   Type getFixedType(TypeVariableType *typeVar) const;
+
+  /// Try to resolve the given locator to a declaration within this
+  /// solution.
+  ConcreteDeclRef resolveLocatorToDecl(ConstraintLocator *locator) const;
 
   LLVM_ATTRIBUTE_DEPRECATED(
       void dump() const LLVM_ATTRIBUTE_USED,
@@ -820,7 +829,7 @@ struct MemberLookupResult {
     /// Argument labels don't match.
     UR_LabelMismatch,
     
-    /// This uses a type like Self it its signature that cannot be used on an
+    /// This uses a type like Self in its signature that cannot be used on an
     /// existential box.
     UR_UnavailableInExistential,
     
@@ -828,7 +837,7 @@ struct MemberLookupResult {
     /// type.
     UR_InstanceMemberOnType,
     
-    /// This is a static/class member being access through an instance.
+    /// This is a static/class member being accessed through an instance.
     UR_TypeMemberOnInstance,
     
     /// This is a mutating member, being used on an rvalue.
@@ -886,6 +895,13 @@ public:
 
   Constraint *failedConstraint = nullptr;
 
+  /// Expressions that are known to be unevaluated.
+  /// Note: this is only used to support ObjCSelectorExpr at the moment.
+  llvm::SmallPtrSet<Expr *, 2> UnevaluatedRootExprs;
+
+  /// The original CS if this CS was created as a simplification of another CS
+  ConstraintSystem *baseCS = nullptr;
+
 private:
 
   /// \brief Allocator used for all of the related constraint systems.
@@ -933,7 +949,7 @@ private:
   /// There can only be a single contextual type on the root of the expression
   /// being checked.  If specified, this holds its type along with the base
   /// expression, and the purpose of it.
-  Type contextualType;
+  TypeLoc contextualType;
   Expr *contextualTypeNode = nullptr;
   ContextualTypePurpose contextualTypePurpose = CTP_Unused;
   
@@ -1033,11 +1049,16 @@ public:
   /// we're exploring. 
   SolverState *solverState = nullptr;
 
+  struct ArgumentLabelState {
+    ArrayRef<Identifier> Labels;
+    bool HasTrailingClosure;
+  };
+
   /// A mapping from the constraint locators for references to various
   /// names (e.g., member references, normal name references, possible
   /// constructions) to the argument labels provided in the call to
   /// that locator.
-  llvm::DenseMap<ConstraintLocator *, ArrayRef<Identifier>> ArgumentLabels;
+  llvm::DenseMap<ConstraintLocator *, ArgumentLabelState> ArgumentLabels;
 
   /// FIXME: This is a workaround for the way we perform protocol
   /// conformance checking for generic requirements, where we re-use
@@ -1213,17 +1234,25 @@ public:
     this->FavoredTypes[E] = T;
   }
  
-  void setContextualType(Expr *E, Type T, ContextualTypePurpose purpose) {
+  void setContextualType(Expr *E, TypeLoc T, ContextualTypePurpose purpose) {
     contextualTypeNode = E;
     contextualType = T;
     contextualTypePurpose = purpose;
   }
 
   Type getContextualType(Expr *E) const {
-    return E == contextualTypeNode ? contextualType : Type();
+    return E == contextualTypeNode ? contextualType.getType() : Type();
   }
   Type getContextualType() const {
+    return contextualType.getType();
+  }
+
+  TypeLoc getContextualTypeLoc() const {
     return contextualType;
+  }
+
+  const Expr *getContextualTypeNode() const {
+    return contextualTypeNode;
   }
 
   ContextualTypePurpose getContextualTypePurpose() const {
@@ -1478,15 +1507,10 @@ public:
   ///
   /// \param type The type to open.
   ///
-  /// \param dc The declaration context in which the type occurs.
-  ///
   /// \returns The opened type.
-  Type openType(Type type, ConstraintLocatorBuilder locator,
-                DeclContext *dc = nullptr) {
+  Type openType(Type type, ConstraintLocatorBuilder locator) {
     llvm::DenseMap<CanType, TypeVariableType *> replacements;
-    return openType(type, locator, replacements, dc,
-                    /*skipProtocolSelfConstraint=*/false,
-                    /*minOpeningDepth=*/0);
+    return openType(type, locator, replacements);
   }
 
   /// \brief "Open" the given type by replacing any occurrences of generic
@@ -1497,22 +1521,37 @@ public:
   /// \param replacements The mapping from opened types to the type
   /// variables to which they were opened.
   ///
-  /// \param dc The declaration context in which the type occurs.
+  /// \returns The opened type, or \c type if there are no archetypes in it.
+  Type openType(Type type,
+                ConstraintLocatorBuilder locator,
+                llvm::DenseMap<CanType, TypeVariableType *> &replacements);
+
+  /// \brief "Open" the given function type.
+  ///
+  /// If the function type is non-generic, this is equivalent to calling
+  /// openType(). Otherwise, it calls openGeneric() on the generic
+  /// function's signature first.
+  ///
+  /// \param funcType The function type to open.
+  ///
+  /// \param replacements The mapping from opened types to the type
+  /// variables to which they were opened.
+  ///
+  /// \param innerDC The generic context from which the type originates.
+  ///
+  /// \param outerDC The generic context containing the declaration.
   ///
   /// \param skipProtocolSelfConstraint Whether to skip the constraint on a
   /// protocol's 'Self' type.
   ///
-  /// \param minOpeningDepth Whether to skip generic parameters from generic
-  /// contexts that we're inheriting context archetypes from. See the comment
-  /// on openGeneric().
-  ///
   /// \returns The opened type, or \c type if there are no archetypes in it.
-  Type openType(Type type,
-                ConstraintLocatorBuilder locator,
-                llvm::DenseMap<CanType, TypeVariableType *> &replacements,
-                DeclContext *dc = nullptr,
-                bool skipProtocolSelfConstraint = false,
-                unsigned minOpeningDepth = 0);
+  Type openFunctionType(
+      AnyFunctionType *funcType,
+      ConstraintLocatorBuilder locator,
+      llvm::DenseMap<CanType, TypeVariableType *> &replacements,
+      DeclContext *innerDC,
+      DeclContext *outerDC,
+      bool skipProtocolSelfConstraint);
 
   /// \brief "Open" the given binding type by replacing any occurrences of
   /// archetypes (including those implicit in unbound generic types) with
@@ -1528,30 +1567,17 @@ public:
 
   /// Open the generic parameter list and its requirements, creating
   /// type variables for each of the type parameters.
-  ///
-  /// Note: when a generic declaration is nested inside a generic function, the
-  /// generic parameters of the outer function do not appear in the inner type's
-  /// generic signature.
-  ///
-  /// Eg,
-  ///
-  /// func foo<T>() {
-  ///   func g() -> T {} // type is () -> T
-  /// }
-  ///
-  /// class Foo<T> {
-  ///   func g() -> T {} // type is <T> Foo<T> -> () -> T
-  /// }
-  ///
-  /// Instead, the outer parameters can appear as free variables in the nested
-  /// declaration's signature, but they do not have to, so they might not be
-  /// substituted at all. Since the inner declaration inherits the context
-  /// archetypes of the outer function we do not need to open them here.
-  void openGeneric(DeclContext *dc,
+  void openGeneric(DeclContext *innerDC,
+                   DeclContext *outerDC,
+                   GenericSignature *signature,
+                   bool skipProtocolSelfConstraint,
+                   ConstraintLocatorBuilder locator,
+                   llvm::DenseMap<CanType, TypeVariableType *> &replacements);
+  void openGeneric(DeclContext *innerDC,
+                   DeclContext *outerDC,
                    ArrayRef<GenericTypeParamType *> params,
                    ArrayRef<Requirement> requirements,
                    bool skipProtocolSelfConstraint,
-                   unsigned minOpeningDepth,
                    ConstraintLocatorBuilder locator,
                    llvm::DenseMap<CanType, TypeVariableType *> &replacements);
 
@@ -1702,10 +1728,6 @@ public:
     /// Indicates we're unwrapping an optional type for a value-to-optional
     /// conversion.
     TMF_UnwrappingOptional = 0x8,
-    
-    /// Indicates we're applying an operator function with a nil-literal
-    /// argument.
-    TMF_ApplyingOperatorWithNil = 0x10,
   };
 
 private:
@@ -2112,34 +2134,6 @@ static inline bool computeTupleShuffle(TupleType *fromTuple,
 /// trailing closure.
 bool hasTrailingClosure(const ConstraintLocatorBuilder &locator);
 
-/// A call argument or parameter.
-struct LLVM_LIBRARY_VISIBILITY CallArgParam {
-  /// The type of the argument or parameter. For a variadic parameter,
-  /// this is the element type.
-  Type Ty;
-
-  // The label associated with the argument or parameter, if any.
-  Identifier Label;
-
-  /// Whether the parameter has a default argument.  Not valid for arguments.
-  bool HasDefaultArgument = false;
-
-  /// Whether the parameter is variadic. Not valid for arguments.
-  bool Variadic = false;
-
-  /// Whether the argument or parameter has a label.
-  bool hasLabel() const { return !Label.empty(); }
-};
-
-/// Compute an argument or parameter type into an array of \c CallArgParams.
-///
-/// \param type The type to decompose.
-SmallVector<CallArgParam, 4> decomposeArgParamType(Type type);
-
-/// Turn a param list into a symbolic and printable representation that does not
-/// include the types, something like (: , b:, c:)
-std::string getParamListAsString(ArrayRef<CallArgParam> parameters);
-
 /// Describes the arguments to which a parameter binds.
 /// FIXME: This is an awful data structure. We want the equivalent of a
 /// TinyPtrVector for unsigned values.
@@ -2198,6 +2192,14 @@ bool matchCallArguments(ArrayRef<CallArgParam> argTuple,
                         bool allowFixes,
                         MatchCallArgumentListener &listener,
                         SmallVectorImpl<ParamBinding> &parameterBindings);
+
+/// Attempt to prove that arguments with the given labels at the
+/// given parameter depth cannot be used with the given value.
+/// If this cannot be proven, conservatively returns true.
+bool areConservativelyCompatibleArgumentLabels(ValueDecl *decl,
+                                               unsigned parameterDepth,
+                                               ArrayRef<Identifier> labels,
+                                               bool hasTrailingClosure);
 
 /// Simplify the given locator by zeroing in on the most specific
 /// subexpression described by the locator.

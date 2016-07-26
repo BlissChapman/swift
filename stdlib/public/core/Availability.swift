@@ -17,10 +17,9 @@ import SwiftShims
 ///
 /// This is a magic entry point known to the compiler. It is called in
 /// generated code for API availability checking.
-@warn_unused_result
 @_semantics("availability.osversion")
 public func _stdlib_isOSVersionAtLeast(
-  major: Builtin.Word,
+  _ major: Builtin.Word,
   _ minor: Builtin.Word,
   _ patch: Builtin.Word
 ) -> Builtin.Int1 {
@@ -37,53 +36,51 @@ public func _stdlib_isOSVersionAtLeast(
   return result._value
 #else
   // FIXME: As yet, there is no obvious versioning standard for platforms other
-  // than Darwin-based OS', so we just assume false for now. 
+  // than Darwin-based OSes, so we just assume false for now. 
   // rdar://problem/18881232
   return false._value
 #endif
 }
 
-extension _SwiftNSOperatingSystemVersion : Comparable { }
+extension _SwiftNSOperatingSystemVersion : Comparable {
 
-@warn_unused_result
-public func == (
-  lhs: _SwiftNSOperatingSystemVersion,
-  rhs: _SwiftNSOperatingSystemVersion
-) -> Bool {
-  return lhs.majorVersion == rhs.majorVersion &&
-         lhs.minorVersion == rhs.minorVersion &&
-         lhs.patchVersion == rhs.patchVersion
-}
-
-/// Lexicographic comparison of version components.
-@warn_unused_result
-public func < (
-  lhs: _SwiftNSOperatingSystemVersion,
-  rhs: _SwiftNSOperatingSystemVersion
-) -> Bool {
-  guard lhs.majorVersion == rhs.majorVersion else {
-    return lhs.majorVersion < rhs.majorVersion
+  public static func == (
+    lhs: _SwiftNSOperatingSystemVersion,
+    rhs: _SwiftNSOperatingSystemVersion
+  ) -> Bool {
+    return lhs.majorVersion == rhs.majorVersion &&
+           lhs.minorVersion == rhs.minorVersion &&
+           lhs.patchVersion == rhs.patchVersion
   }
 
-  guard lhs.minorVersion == rhs.minorVersion else {
-    return lhs.minorVersion < rhs.minorVersion
+  /// Lexicographic comparison of version components.
+  public static func < (
+    lhs: _SwiftNSOperatingSystemVersion,
+    rhs: _SwiftNSOperatingSystemVersion
+  ) -> Bool {
+    guard lhs.majorVersion == rhs.majorVersion else {
+      return lhs.majorVersion < rhs.majorVersion
+    }
+
+    guard lhs.minorVersion == rhs.minorVersion else {
+      return lhs.minorVersion < rhs.minorVersion
+    }
+
+    return lhs.patchVersion < rhs.patchVersion
   }
 
-  return lhs.patchVersion < rhs.patchVersion
-}
+  public static func >= (
+    lhs: _SwiftNSOperatingSystemVersion,
+    rhs: _SwiftNSOperatingSystemVersion
+  ) -> Bool {
+    guard lhs.majorVersion == rhs.majorVersion else {
+      return lhs.majorVersion >= rhs.majorVersion
+    }
 
-@warn_unused_result
-public func >= (
-  lhs: _SwiftNSOperatingSystemVersion,
-  rhs: _SwiftNSOperatingSystemVersion
-) -> Bool {
-  guard lhs.majorVersion == rhs.majorVersion else {
-    return lhs.majorVersion >= rhs.majorVersion
+    guard lhs.minorVersion == rhs.minorVersion else {
+      return lhs.minorVersion >= rhs.minorVersion
+    }
+
+    return lhs.patchVersion >= rhs.patchVersion
   }
-
-  guard lhs.minorVersion == rhs.minorVersion else {
-    return lhs.minorVersion >= rhs.minorVersion
-  }
-
-  return lhs.patchVersion >= rhs.patchVersion
 }

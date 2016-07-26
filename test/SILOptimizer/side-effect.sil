@@ -1,4 +1,4 @@
-// RUN: %target-sil-opt %s -side-effects-dump -o /dev/null | FileCheck %s
+// RUN: %target-sil-opt %s -module-name Swift -side-effects-dump -o /dev/null | FileCheck %s
 
 // REQUIRES: asserts
 
@@ -7,6 +7,8 @@ import Builtin
 //////////////////
 // Declarations //
 //////////////////
+
+enum Never {}
 
 struct Int32 {
   var _value : Builtin.Int32
@@ -31,7 +33,7 @@ class X {
   init()
 }
 
-sil @exitfunc : $@convention(thin) @noreturn () -> ()
+sil [_semantics "arc.programtermination_point"] @exitfunc : $@convention(thin) () -> Never
 sil [readnone] @pure_func : $@convention(thin) () -> ()
 sil [readonly] @readonly_owned : $@convention(thin) (@owned X) -> ()
 sil [readonly] @readonly_guaranteed : $@convention(thin) (@guaranteed X) -> ()
@@ -107,7 +109,7 @@ bb0(%0 : $X, %1 : $*Int32):
 // CHECK-LABEL: sil @partial_apply_load_store_to_args
 // The apply may call deinit of the callee_owned thick function. Therefore the
 // function effects are conservative.
-// CHECK: <func=rw+-,param0=,param1=,param2=;alloc;trap;readrc>
+// CHECK: <func=rw+-,param0=,param1=r,param2=;alloc;trap;readrc>
 sil @partial_apply_load_store_to_args : $@convention(thin) (@inout Int32, @inout Int32, @guaranteed X) -> () {
 bb0(%0 : $*Int32, %1 : $*Int32, %2 : $X):
   %f = function_ref @load_store_to_args : $@convention(thin) (@inout Int32, @inout Int32, @guaranteed X) -> ()
@@ -292,7 +294,7 @@ bb0(%0 : $EP):
   %utbc = unchecked_trivial_bit_cast %se : $Builtin.BridgeObject to $Builtin.RawPointer
   %idx = integer_literal $Builtin.Int32, 0
   %irp = index_raw_pointer %utbc : $Builtin.RawPointer, %idx : $Builtin.Int32
-  %pta = pointer_to_address %irp : $Builtin.RawPointer to $*Int32
+  %pta = pointer_to_address %irp : $Builtin.RawPointer to [strict] $*Int32
   %sea = struct_element_addr %pta : $*Int32, #Int32._value
   %l = load %sea : $*Builtin.Int32
   return %l : $Builtin.Int32
@@ -425,8 +427,10 @@ bb0:
   cond_br undef, bb1, bb2
 
 bb1:
-  %u = function_ref @exitfunc : $@convention(thin) @noreturn () -> ()
-  %a = apply %u() : $@convention(thin) @noreturn () -> ()
+  %t = builtin "int_trap"() : $()
+  %b = builtin "conditionallyUnreachable"() : $()
+  %u = function_ref @exitfunc : $@convention(thin) () -> Never
+  %a = apply %u() : $@convention(thin) () -> Never
   unreachable
 
 bb2:
@@ -472,3 +476,15 @@ bb0(%0 : $X):
   %3 = tuple()
   return %3 : $()
 }
+
+// CHECK-LABEL: sil @indirect_parameter_to_partial_apply
+// CHECK-NEXT: <func=,param0=r;alloc>
+
+sil @indirect_parameter_to_partial_apply : $@convention(thin) (@in Int32) ->  @owned @callee_owned (Bool) -> Int32 {
+bb0(%0 : $*Int32):
+  %2 = function_ref @closure : $@convention(thin) (Bool, @in Int32) -> Int32
+  %3 = partial_apply %2(%0) : $@convention(thin) (Bool, @in Int32) -> Int32
+  return %3 : $@callee_owned (Bool) -> Int32
+}
+
+sil @closure : $@convention(thin) (Bool, @in Int32) -> Int32

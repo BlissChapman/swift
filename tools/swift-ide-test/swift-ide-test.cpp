@@ -21,6 +21,7 @@
 #include "swift/AST/Mangle.h"
 #include "swift/AST/PrintOptions.h"
 #include "swift/AST/RawComment.h"
+#include "swift/AST/SourceEntityWalker.h"
 #include "swift/AST/USRGeneration.h"
 #include "swift/Basic/Demangle.h"
 #include "swift/Basic/DemangleWrappers.h"
@@ -35,9 +36,9 @@
 #include "swift/IDE/CommentConversion.h"
 #include "swift/IDE/ModuleInterfacePrinting.h"
 #include "swift/IDE/REPLCodeCompletion.h"
-#include "swift/IDE/SourceEntityWalker.h"
 #include "swift/IDE/SyntaxModel.h"
 #include "swift/IDE/Utils.h"
+#include "swift/Sema/IDETypeChecking.h"
 #include "swift/Markup/Markup.h"
 #include "swift/Config.h"
 #include "clang/APINotes/APINotesReader.h"
@@ -209,6 +210,9 @@ Action(llvm::cl::desc("Mode:"), llvm::cl::init(ActionType::None),
 static llvm::cl::opt<std::string>
 SourceFilename("source-filename", llvm::cl::desc("Name of the source file"));
 
+static llvm::cl::opt<std::string>
+SecondSourceFilename("second-source-filename", llvm::cl::desc("Name of the second source file"));
+
 static llvm::cl::list<std::string>
 InputFilenames(llvm::cl::Positional, llvm::cl::desc("[input files...]"),
                llvm::cl::ZeroOrMore);
@@ -290,6 +294,16 @@ static llvm::cl::opt<bool>
 Swift3Migration("swift3-migration",
                    llvm::cl::desc("Enable Fix-It based migration aids for Swift 3"),
                    llvm::cl::init(false));
+
+static llvm::cl::opt<bool>
+InferImportAsMember("enable-infer-import-as-member",
+                   llvm::cl::desc("Infer when a global could be imported as a member"),
+                   llvm::cl::init(false));
+
+static llvm::cl::opt<bool>
+HonorSwiftNewtypeAttr("enable-swift-newtype",
+                      llvm::cl::desc("Enable swift_newtype import"),
+                      llvm::cl::init(false));
 
 static llvm::cl::opt<bool>
 StripNSPrefix("enable-strip-ns-prefix",
@@ -511,6 +525,13 @@ HeaderToPrint("header-to-print",
 static llvm::cl::opt<std::string>
 LineColumnPair("pos", llvm::cl::desc("Line:Column pair"));
 
+static llvm::cl::opt<std::string>
+USR("usr", llvm::cl::desc("USR"));
+
+static llvm::cl::opt<std::string>
+ModuleName("module-name", llvm::cl::desc("The module name of the given test."),
+           llvm::cl::init("swift_ide_test"));
+
 static llvm::cl::opt<bool>
 NoEmptyLineBetweenMembers("no-empty-line-between-members",
                           llvm::cl::desc("Print no empty line between members."),
@@ -532,6 +553,7 @@ removeCodeCompletionTokens(llvm::MemoryBuffer *Input,
 
 static int doCodeCompletion(const CompilerInvocation &InitInvok,
                             StringRef SourceFilename,
+                            StringRef SecondSourceFileName,
                             StringRef CodeCompletionToken,
                             bool CodeCompletionDiagnostics,
                             bool CodeCompletionKeywords) {
@@ -562,6 +584,7 @@ static int doCodeCompletion(const CompilerInvocation &InitInvok,
   CompilerInvocation Invocation(InitInvok);
   Invocation.setCodeCompletionPoint(CleanFile.get(), CodeCompletionOffset);
 
+
   std::unique_ptr<ide::OnDiskCodeCompletionCache> OnDiskCache;
   if (!options::CompletionCachePath.empty()) {
     OnDiskCache = llvm::make_unique<ide::OnDiskCodeCompletionCache>(
@@ -582,7 +605,9 @@ static int doCodeCompletion(const CompilerInvocation &InitInvok,
                                               *Consumer.get()));
 
   Invocation.setCodeCompletionFactory(CompletionCallbacksFactory.get());
-
+  if (!SecondSourceFileName.empty()) {
+    Invocation.addInputFilename(SecondSourceFileName);
+  }
   CompilerInstance CI;
 
   PrintingDiagnosticConsumer PrintDiags;
@@ -927,6 +952,7 @@ private:
 
   static StringRef getTagName(SyntaxStructureKind K) {
     switch (K) {
+      case SyntaxStructureKind::Argument: return "arg";
       case SyntaxStructureKind::Class: return "class";
       case SyntaxStructureKind::Struct: return "struct";
       case SyntaxStructureKind::Protocol: return "protocol";
@@ -1045,7 +1071,7 @@ static int doStructureAnnotation(const CompilerInvocation &InitInvok,
 
 namespace {
 
-class AnnotationPrinter : public ide::SourceEntityWalker {
+class AnnotationPrinter : public SourceEntityWalker {
   SourceManager &SM;
   unsigned BufferID;
   llvm::raw_ostream &OS;
@@ -1562,11 +1588,29 @@ static int doPrintLocalTypes(const CompilerInvocation &InitInvok,
 
 namespace {
 class AnnotatingPrinter : public StreamPrinter {
+  llvm::SmallDenseMap<ValueDecl*, ValueDecl*> DefaultImplementationMap;
+  bool InProtocol = false;
 public:
   using StreamPrinter::StreamPrinter;
 
   void printDeclPre(const Decl *D, Optional<BracketOptions> Bracket) override {
-    OS << "<decl:" << Decl::getKindName(D->getKind()) << '>';
+    StringRef HasDefault = "";
+    if (D->getKind() == DeclKind::Protocol) {
+      InProtocol = true;
+      DefaultImplementationMap.clear();
+      ProtocolDecl *PD = const_cast<ProtocolDecl*>(dyn_cast<ProtocolDecl>(D));
+      collectDefaultImplementationForProtocolMembers(PD,
+                                                     DefaultImplementationMap);
+    }
+    if (InProtocol) {
+      if (auto *VD = const_cast<ValueDecl*>(dyn_cast<ValueDecl>(D))) {
+        for (auto Pair : DefaultImplementationMap) {
+          if (Pair.getSecond() == VD)
+             HasDefault = "(HasDefault)";
+        }
+      }
+    }
+    OS << "<decl:" << Decl::getKindName(D->getKind()) << HasDefault << '>';
   }
   void printDeclLoc(const Decl *D) override {
     OS << "<loc>";
@@ -1575,6 +1619,9 @@ public:
     OS << "</loc>";
   }
   void printDeclPost(const Decl *D, Optional<BracketOptions> Bracket) override {
+    if (D->getKind() == DeclKind::Protocol) {
+      InProtocol = false;
+    }
     OS << "</decl>";
   }
   void printStructurePre(PrintStructureKind Kind, const Decl *D) override {
@@ -1590,7 +1637,7 @@ public:
   void printSynthesizedExtensionPre(const ExtensionDecl *ED,
                                     const NominalTypeDecl *NTD,
                                     Optional<BracketOptions> Bracket) override {
-    if (Bracket.hasValue() && !Bracket.getValue().shouldOpenExtension)
+    if (Bracket.hasValue() && !Bracket.getValue().shouldOpenExtension(ED))
       return;
     OS << "<synthesized>";
   }
@@ -1598,7 +1645,7 @@ public:
   void printSynthesizedExtensionPost(const ExtensionDecl *ED,
                                      const NominalTypeDecl *NTD,
                                      Optional<BracketOptions> Bracket) override {
-    if (Bracket.hasValue() && !Bracket.getValue().shouldCloseExtension)
+    if (Bracket.hasValue() && !Bracket.getValue().shouldCloseExtension(ED))
       return;
     OS << "</synthesized>";
   }
@@ -1629,7 +1676,7 @@ struct GroupNamesPrinter {
   }
 
   void addDecl(const Decl *D) {
-    if(auto VD = dyn_cast<ValueDecl>(D)) {
+    if (auto VD = dyn_cast<ValueDecl>(D)) {
       if (!VD->isImplicit() && !VD->isPrivateStdlibDecl()) {
         StringRef Name = VD->getGroupName().hasValue() ?
           VD->getGroupName().getValue() : "";
@@ -1936,10 +1983,10 @@ public:
     if (D->isImplicit())
       return true;
 
-    llvm::markup::MarkupContext MC;
-    auto DC = getDocComment(MC, D);
-    if(DC.hasValue())
-      llvm::markup::dump(DC.getValue()->getDocument(), OS);
+    swift::markup::MarkupContext MC;
+    auto DC = getSingleDocComment(MC, D);
+    if (DC.hasValue())
+      swift::markup::dump(DC.getValue()->getDocument(), OS);
 
     return true;
   }
@@ -2319,7 +2366,36 @@ static int doPrintTypeInterface(const CompilerInvocation &InitInvok,
     llvm::errs() << "Cannot get type of the sema token.\n";
     return 1;
   }
-  ASTPrinter::printTypeInterface(SemaT.Ty, SemaT.DC, llvm::outs());
+  StreamPrinter Printer(llvm::outs());
+  std::string Error;
+  std::string TypeName;
+  if (printTypeInterface(SemaT.DC->getParentModule(), SemaT.Ty, Printer,
+                         TypeName, Error)) {
+    llvm::errs() << Error;
+    return 1;
+  }
+  return 0;
+}
+
+static int doPrintTypeInterfaceForTypeUsr(const CompilerInvocation &InitInvok,
+                                          const StringRef FileName,
+                                          const StringRef Usr) {
+  CompilerInvocation Invocation(InitInvok);
+  Invocation.addInputFilename(FileName);
+  CompilerInstance CI;
+  if (CI.setup(Invocation))
+    return 1;
+  CI.performSema();
+  DeclContext *DC = CI.getMainModule()->getModuleContext();
+  assert(DC && "no decl context?");
+  StreamPrinter Printer(llvm::outs());
+  std::string TypeName;
+  std::string Error;
+  if (printTypeInterface(DC->getParentModule(), Usr, Printer, TypeName,
+                         Error)) {
+    llvm::errs() << Error;
+    return 1;
+  }
   return 0;
 }
 
@@ -2329,7 +2405,7 @@ static int doPrintTypeInterface(const CompilerInvocation &InitInvok,
 
 namespace {
 
-class USRPrinter : public ide::SourceEntityWalker {
+class USRPrinter : public SourceEntityWalker {
   SourceManager &SM;
   unsigned BufferID;
   llvm::raw_ostream &OS;
@@ -2626,8 +2702,7 @@ int main(int argc, char *argv[]) {
   InitInvok.setMainExecutablePath(
       llvm::sys::fs::getMainExecutable(argv[0],
           reinterpret_cast<void *>(&anchorForGetMainExecutable)));
-
-  InitInvok.setModuleName("swift_ide_test");
+  InitInvok.setModuleName(options::ModuleName);
 
   InitInvok.setSDKPath(options::SDK);
   if (!options::Triple.empty())
@@ -2645,10 +2720,15 @@ int main(int argc, char *argv[]) {
   InitInvok.getLangOptions().CodeCompleteInitsInPostfixExpr |=
       options::CodeCompleteInitsInPostfixExpr;
   InitInvok.getLangOptions().Swift3Migration |= options::Swift3Migration;
+  InitInvok.getLangOptions().InferImportAsMember |=
+    options::InferImportAsMember;
   InitInvok.getLangOptions().StripNSPrefix |= options::StripNSPrefix;
   InitInvok.getClangImporterOptions().ImportForwardDeclarations |=
     options::ObjCForwardDeclarations;
-
+  InitInvok.getClangImporterOptions().InferImportAsMember |=
+    options::InferImportAsMember;
+  InitInvok.getClangImporterOptions().HonorSwiftNewtypeAttr |=
+    options::HonorSwiftNewtypeAttr;
   if (!options::ResourceDir.empty()) {
     InitInvok.setRuntimeResourcePath(options::ResourceDir);
   }
@@ -2733,6 +2813,7 @@ int main(int argc, char *argv[]) {
     }
     ExitCode = doCodeCompletion(InitInvok,
                                 options::SourceFilename,
+                                options::SecondSourceFilename,
                                 options::CodeCompletionToken,
                                 options::CodeCompletionDiagnostics,
                                 options::CodeCompletionKeywords);
@@ -2847,9 +2928,14 @@ int main(int argc, char *argv[]) {
     ExitCode = doPrintUSRs(InitInvok, options::SourceFilename);
     break;
   case ActionType::PrintTypeInterface:
-    ExitCode = doPrintTypeInterface(InitInvok,
-                                    options::SourceFilename,
-                                    options::LineColumnPair);
+    if (options::LineColumnPair.getNumOccurrences() == 1)
+      ExitCode = doPrintTypeInterface(InitInvok,
+                                      options::SourceFilename,
+                                      options::LineColumnPair);
+    else
+      ExitCode = doPrintTypeInterfaceForTypeUsr(InitInvok,
+                                                options::SourceFilename,
+                                                options::USR);
     break;
   case ActionType::ReconstructType:
     ExitCode = doReconstructType(InitInvok, options::SourceFilename);

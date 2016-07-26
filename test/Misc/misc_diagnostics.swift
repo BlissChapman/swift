@@ -13,7 +13,7 @@ if let realRoomName = roomName as! NSString { // expected-error {{initializer fo
 
 var pi = 3.14159265358979
 var d: CGFloat = 2.0
-var dpi:CGFloat = d*pi // expected-error{{cannot convert value of type 'Double' to expected argument type 'CGFloat'}}
+var dpi:CGFloat = d*pi // expected-error{{binary operator '*' cannot be applied to operands of type 'CGFloat' and 'Double'}} // expected-note{{expected an argument list of type '(CGFloat, CGFloat)'}}
 
 let ff: CGFloat = floorf(20.0) // expected-error{{cannot convert value of type 'Float' to specified type 'CGFloat'}}
 
@@ -21,8 +21,8 @@ let total = 15.0
 let count = 7
 let median = total / count // expected-error {{binary operator '/' cannot be applied to operands of type 'Double' and 'Int'}} expected-note {{overloads for '/' exist with these partially matching parameter lists: (Int, Int), (Double, Double)}}
 
-if (1) {} // expected-error{{type 'Int' does not conform to protocol 'Boolean'}}
-if 1 {} // expected-error {{type 'Int' does not conform to protocol 'Boolean'}}
+if (1) {} // expected-error{{'Int' is not convertible to 'Bool'}}
+if 1 {} // expected-error {{'Int' is not convertible to 'Bool'}}
 
 var a: [String] = [1] // expected-error{{cannot convert value of type 'Int' to expected element type 'String'}}
 var b: Int = [1, 2, 3] // expected-error{{contextual type 'Int' cannot be used with array literal}}
@@ -30,7 +30,7 @@ var b: Int = [1, 2, 3] // expected-error{{contextual type 'Int' cannot be used w
 var f1: Float = 2.0
 var f2: Float = 3.0
 
-var dd: Double = f1 - f2 // expected-error{{cannot convert value of type 'Float' to expected argument type 'Double'}}
+var dd: Double = f1 - f2 // expected-error{{binary operator '-' cannot be applied to two 'Float' operands}} // expected-note{{expected an argument list of type '(Double, Double)'}}
 
 func f() -> Bool {
   return 1 + 1 // expected-error{{no '+' candidates produce the expected contextual result type 'Bool'}}
@@ -38,9 +38,9 @@ func f() -> Bool {
 }
 
 // Test that nested diagnostics are properly surfaced.
-func takesInt(i: Int) {}
+func takesInt(_ i: Int) {}
 func noParams() -> Int { return 0 }
-func takesAndReturnsInt(i: Int) -> Int { return 0 }
+func takesAndReturnsInt(_ i: Int) -> Int { return 0 }
 
 takesInt(noParams(1)) // expected-error{{argument passed to call that takes no arguments}}
 
@@ -60,7 +60,7 @@ func retV() { return true } // expected-error {{unexpected non-void return value
 func retAI() -> Int {
     let a = [""]
     let b = [""]
-    return (a + b) // expected-error {{cannot convert value of type '[String]' to expected argument type 'Int'}}
+    return (a + b) // expected-error{{binary operator '+' cannot be applied to two '[String]' operands}} // expected-note{{expected an argument list of type '(Int, Int)'}}
 }
 
 func bad_return1() {
@@ -81,7 +81,7 @@ class MyBadReturnClass {
 }
 
 func ==(lhs:MyBadReturnClass, rhs:MyBadReturnClass) {
-  return MyBadReturnClass.intProperty == MyBadReturnClass.intProperty  // expected-error {{cannot convert value of type 'Int' to expected argument type 'MyBadReturnClass'}}
+  return MyBadReturnClass.intProperty == MyBadReturnClass.intProperty  // expected-error{{binary operator '==' cannot be applied to two 'Int' operands}} // expected-note{{expected an argument list of type '(MyBadReturnClass, MyBadReturnClass)'}}
 }
 
 
@@ -99,14 +99,11 @@ func test17875634() {
   var col = 2
   var coord = (row, col)
 
-  match += (1, 2) // expected-error{{binary operator '+=' cannot be applied to operands of type '[(Int, Int)]' and '(Int, Int)'}}
-  // expected-note @-1 {{overloads for '+=' exist with these partially matching parameter lists:}}
-  
-  match += (row, col) // expected-error{{binary operator '+=' cannot be applied to operands of type '[(Int, Int)]' and '(Int, Int)'}}
-  // expected-note @-1 {{overloads for '+=' exist with these partially matching parameter lists:}}
+  match += (1, 2) // expected-error{{argument type '(Int, Int)' does not conform to expected type 'Sequence'}}
 
-  match += coord // expected-error{{binary operator '+=' cannot be applied to operands of type '[(Int, Int)]' and '(Int, Int)'}}
-  // expected-note @-1 {{overloads for '+=' exist with these partially matching parameter lists:}}
+  match += (row, col) // expected-error{{argument type '(@lvalue Int, @lvalue Int)' does not conform to expected type 'Sequence'}}
+
+  match += coord // expected-error{{argument type '@lvalue (Int, Int)' does not conform to expected type 'Sequence'}}
 
   match.append(row, col) // expected-error{{extra argument in call}}
 
@@ -117,7 +114,7 @@ func test17875634() {
 
   // Make sure the behavior matches the non-generic case.
   struct FakeNonGenericArray {
-    func append(p: (Int, Int)) {}
+    func append(_ p: (Int, Int)) {}
   }
   let a2 = FakeNonGenericArray()
   a2.append(row, col) // expected-error{{extra argument in call}}
@@ -128,21 +125,21 @@ func test17875634() {
 
 // <rdar://problem/20770032> Pattern matching ranges against tuples crashes the compiler
 func test20770032() {
-  if case let 1...10 = (1, 1) { // expected-warning{{'let' pattern has no effect; sub-pattern didn't bind any variables}} {{11-15=}} expected-error{{expression pattern of type 'Range<Int>' cannot match values of type '(Int, Int)'}}
+  if case let 1...10 = (1, 1) { // expected-warning{{'let' pattern has no effect; sub-pattern didn't bind any variables}} {{11-15=}} expected-error{{expression pattern of type 'CountableClosedRange<Int>' cannot match values of type '(Int, Int)'}}
   }
 }
 
 
 
-func tuple_splat1(a : Int, _ b : Int) {
+func tuple_splat1(_ a : Int, _ b : Int) {
   let x = (1,2)
-  tuple_splat1(x)          // expected-warning {{passing 2 arguments to a callee as a single tuple value is deprecated}}
+  tuple_splat1(x)          // expected-error {{passing 2 arguments to a callee as a single tuple value has been removed in Swift 3}}
   tuple_splat1(1, 2)       // Ok.
   tuple_splat1((1, 2))     // expected-error {{missing argument for parameter #2 in call}}
 }
 
 // This take a tuple as a value, so it isn't a tuple splat.
-func tuple_splat2(q : (a : Int, b : Int)) {
+func tuple_splat2(_ q : (a : Int, b : Int)) {
   let x = (1,2)
   tuple_splat2(x)          // Ok
   let y = (1, b: 2)
@@ -151,4 +148,8 @@ func tuple_splat2(q : (a : Int, b : Int)) {
   tuple_splat2(1, b: 2)    // expected-error {{extra argument 'b' in call}}
 }
 
+// SR-1612: Type comparison of foreign types is always true.
+func is_foreign(a: AnyObject) -> Bool {
+  return a is CGColor // expected-warning {{'is' test is always true because 'CGColor' is a Core Foundation type}}
+}
 

@@ -10,9 +10,9 @@ class B : A {
 
 class Other { }
 
-func acceptA(a: A) { }
+func acceptA(_ a: A) { }
 
-func f0<T : A>(obji: T, _ ai: A, _ bi: B) {
+func f0<T : A>(_ obji: T, _ ai: A, _ bi: B) {
   var obj = obji, a = ai, b = bi
   // Method access
   obj.foo()
@@ -36,7 +36,7 @@ func f0<T : A>(obji: T, _ ai: A, _ bi: B) {
   b = obj as! B
 }
 
-func call_f0(a: A, b: B, other: Other) {
+func call_f0(_ a: A, b: B, other: Other) {
   f0(a, a, b)
   f0(b, a, b)
   f0(other, a, b) // expected-error{{cannot convert value of type 'Other' to expected argument type 'A'}}
@@ -56,16 +56,16 @@ func testGenericInherit() {
 
 
 struct SS<T> : T { } // expected-error{{inheritance from non-protocol type 'T'}}
-enum SE<T> : T { case X } // expected-error{{raw type 'T' is not convertible from any literal}}
+enum SE<T> : T { case X } // expected-error{{raw type 'T' is not expressible by any literal}}
 // expected-error@-1{{type 'SE<T>' does not conform to protocol 'RawRepresentable'}}
 
 // Also need Equatable for init?(RawValue)
-enum SE2<T : IntegerLiteralConvertible> 
+enum SE2<T : ExpressibleByIntegerLiteral> 
   : T // expected-error{{RawRepresentable 'init' cannot be synthesized because raw type 'T' is not Equatable}}
 { case X }
 
 // ... but not if init?(RawValue) is directly implemented some other way.
-enum SE3<T : IntegerLiteralConvertible> : T { 
+enum SE3<T : ExpressibleByIntegerLiteral> : T { 
   case X 
 
   init?(rawValue: T) {
@@ -73,4 +73,4 @@ enum SE3<T : IntegerLiteralConvertible> : T {
   }
 }
 
-enum SE4<T : protocol<IntegerLiteralConvertible,Equatable> > : T { case X }
+enum SE4<T : ExpressibleByIntegerLiteral & Equatable> : T { case X }

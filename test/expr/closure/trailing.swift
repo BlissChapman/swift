@@ -1,18 +1,19 @@
 // RUN: %target-parse-verify-swift
 
-func takeFunc(f: (Int) -> Int) -> Int {}
-func takeValueAndFunc(value: Int, _ f: (Int) -> Int) {}
-func takeTwoFuncs(f: (Int) -> Int, _ g: (Int) -> Int) {}
-func takeFuncWithDefault(f f : ((Int) -> Int)? = nil) {}
-func takeTwoFuncsWithDefaults(f1 f1 : (Int -> Int)? = nil, f2 : (String -> String)? = nil) {}
+@discardableResult
+func takeFunc(_ f: (Int) -> Int) -> Int {}
+func takeValueAndFunc(_ value: Int, _ f: (Int) -> Int) {}
+func takeTwoFuncs(_ f: (Int) -> Int, _ g: (Int) -> Int) {}
+func takeFuncWithDefault(f : ((Int) -> Int)? = nil) {}
+func takeTwoFuncsWithDefaults(f1 : ((Int) -> Int)? = nil, f2 : ((String) -> String)? = nil) {}
 
 struct X {
-  func takeFunc(f: (Int) -> Int) {}
-  func takeValueAndFunc(value: Int, f: (Int) -> Int) {}
-  func takeTwoFuncs(f: (Int) -> Int, g: (Int) -> Int) {}
+  func takeFunc(_ f: (Int) -> Int) {}
+  func takeValueAndFunc(_ value: Int, f: (Int) -> Int) {}
+  func takeTwoFuncs(_ f: (Int) -> Int, g: (Int) -> Int) {}
 }
 
-func addToMemberCalls(x: X) {
+func addToMemberCalls(_ x: X) {
   x.takeFunc() { x in x }
   x.takeFunc() { $0 }
   x.takeValueAndFunc(1) { x in x }
@@ -33,12 +34,12 @@ func makeCalls() {
 }
 
 func notPostfix() {
-  1 + takeFunc { $0 }
+  _ = 1 + takeFunc { $0 }
 }
 
 class C {
-  func map(x: Int -> Int) -> C { return self }
-  func filter(x: Int -> Bool) -> C { return self }
+  func map(_ x: (Int) -> Int) -> C { return self }
+  func filter(_ x: (Int) -> Bool) -> C { return self }
 }
 
 var a = C().map {$0 + 1}.filter {$0 % 3 == 0}
@@ -66,7 +67,7 @@ var c3 = C().map // expected-note{{parsing trailing closure for this call}}
 // Calls with multiple trailing closures should be rejected until we have time
 // to design it right.
 // <rdar://problem/16835718> Ban multiple trailing closures
-func multiTrailingClosure(a : () -> (), b : () -> ()) {
+func multiTrailingClosure(_ a : () -> (), b : () -> ()) {
   multiTrailingClosure({}) {} // ok
   multiTrailingClosure {} {}   // expected-error {{missing argument for parameter #1 in call}} expected-error {{consecutive statements on a line must be separated by ';'}} {{26-26=;}} expected-error {{braced block of statements is an unused closure}} expected-error{{expression resolves to an unused function}}
   
@@ -83,13 +84,13 @@ func labeledArgumentAndTrailingClosure() {
 
   // Trailing closure binds to last parameter, always.
  takeTwoFuncsWithDefaults { "Hello, " + $0 }
-  takeTwoFuncsWithDefaults { $0 + 1 } // expected-error {{cannot convert value of type '(_) -> Int' to expected argument type '(String -> String)?'}} 
+  takeTwoFuncsWithDefaults { $0 + 1 } // expected-error {{cannot convert value of type '(_) -> Int' to expected argument type '((String) -> String)?'}} 
   takeTwoFuncsWithDefaults(f1: {$0 + 1 })
 }
 
 // rdar://problem/17965209
-func rdar17965209_f<T>(t: T) {}
-func rdar17965209(x x: Int = 0, _ handler: (y: Int) -> ()) {}
+func rdar17965209_f<T>(_ t: T) {}
+func rdar17965209(x: Int = 0, _ handler: (y: Int) -> ()) {}
 func rdar17965209_test() {
   rdar17965209() {
     (y) -> () in
@@ -104,8 +105,78 @@ func rdar17965209_test() {
 
 
 // <rdar://problem/22298549> QoI: Unwanted trailing closure produces weird error
-func limitXY(xy:Int, toGamut gamut: [Int]) {}
+func limitXY(_ xy:Int, toGamut gamut: [Int]) {}
 let someInt = 0
 let intArray = [someInt]
 limitXY(someInt, toGamut: intArray) {}  // expected-error {{extra argument 'toGamut' in call}}
 
+
+// <rdar://problem/23036383> QoI: Invalid trailing closures in stmt-conditions produce lowsy diagnostics
+func retBool(x: () -> Int) -> Bool {}
+func maybeInt(_: () -> Int) -> Int? {}
+class Foo23036383 {
+  init() {}
+  func map(_: (Int) -> Int) -> Int? {}
+  func meth1(x: Int, _: () -> Int) -> Bool {}
+  func meth2(_: Int, y: () -> Int) -> Bool {}
+  func filter(by: (Int) -> Bool) -> [Int] {}
+}
+enum MyErr : Error {
+  case A
+}
+
+func r23036383(foo: Foo23036383?, obj: Foo23036383) {
+
+  if retBool(x: { 1 }) { } // OK
+  if (retBool { 1 }) { } // OK
+
+  if retBool{ 1 } {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{13-13=(x: }} {{18-18=)}}
+  }
+  if retBool { 1 } {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{13-14=(x: }} {{19-19=)}}
+  }
+  if retBool() { 1 } {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{14-16=x: }} {{21-21=)}}
+  } else if retBool( ) { 0 } {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{21-24=x: }} {{29-29=)}}
+  }
+
+  if let _ = maybeInt { 1 } {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{22-23=(}} {{28-28=)}}
+  }
+  if let _ = maybeInt { 1 } , true {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{22-23=(}} {{28-28=)}}
+  }
+
+  if let _ = foo?.map {$0+1} {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{22-23=(}} {{29-29=)}}
+  }
+  if let _ = foo?.map() {$0+1} {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{23-25=}} {{31-31=)}}
+  }
+  if let _ = foo, retBool { 1 } {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{26-27=(x: }} {{32-32=)}}
+  }
+
+  if obj.meth1(x: 1) { 0 } {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{20-22=, }} {{27-27=)}}
+  }
+  if obj.meth2(1) { 0 } {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{17-19=, y: }} {{24-24=)}}
+  }
+
+  for _ in obj.filter {$0 > 4} {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{22-23=(by: }} {{31-31=)}}
+  }
+  for _ in obj.filter {$0 > 4} where true {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{22-23=(by: }} {{31-31=)}}
+  }
+  for _ in [1,2] where retBool { 1 } {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{31-32=(x: }} {{37-37=)}}
+  }
+
+  while retBool { 1 } { // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{16-17=(x: }} {{22-22=)}}
+  }
+  while let _ = foo, retBool { 1 } { // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{29-30=(x: }} {{35-35=)}}
+  }
+
+  switch retBool { return 1 } {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{17-18=(x: }} {{30-30=)}}
+    default: break
+  }
+
+  do {
+    throw MyErr.A;
+  } catch MyErr.A where retBool { 1 } {  // expected-error {{trailing closure requires parentheses for disambiguation in this context}} {{32-33=(x: }} {{38-38=)}}
+  } catch { }
+
+  if let _ = maybeInt { 1 }, retBool { 1 } { }
+  // expected-error@-1 {{trailing closure requires parentheses for disambiguation in this context}} {{22-23=(}} {{28-28=)}} 
+  // expected-error@-2 {{trailing closure requires parentheses for disambiguation in this context}} {{37-38=(x: }} {{43-43=)}} 
+}

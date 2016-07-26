@@ -11,13 +11,6 @@
 
 import StdlibUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-import SwiftPrivate
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 var Reflection = TestSuite("Reflection")
 
@@ -33,7 +26,7 @@ Reflection.test("Dictionary/Empty") {
 }
 
 Reflection.test("Dictionary") {
-  let dict = [ "One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5 ]
+  let dict = ["One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5]
 
   var output = ""
   dump(dict, to: &output)
@@ -56,7 +49,7 @@ Reflection.test("Dictionary") {
   expected += "  ▿ (2 elements)\n"
   expected += "    - .0: \"Three\"\n"
   expected += "    - .1: 3\n"
-#elseif arch(x86_64) || arch(arm64) || arch(powerpc64) || arch(powerpc64le)
+#elseif arch(x86_64) || arch(arm64) || arch(powerpc64) || arch(powerpc64le) || arch(s390x)
   var expected = ""
   expected += "▿ 5 key/value pairs\n"
   expected += "  ▿ (2 elements)\n"
@@ -95,7 +88,7 @@ Reflection.test("Set") {
   expected += "  - 5\n"
   expected += "  - 2\n"
   expected += "  - 4\n"
-#elseif arch(x86_64) || arch(arm64) || arch(powerpc64) || arch(powerpc64le)
+#elseif arch(x86_64) || arch(arm64) || arch(powerpc64) || arch(powerpc64le) || arch(s390x)
   var expected = ""
   expected += "▿ 5 members\n"
   expected += "  - 5\n"

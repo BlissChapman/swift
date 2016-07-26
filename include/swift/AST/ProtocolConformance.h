@@ -181,6 +181,10 @@ public:
       if (!assocTypeReq || req->isInvalid())
         continue;
 
+      // If we don't have and cannot resolve witnesses, skip it.
+      if (!resolver && !hasTypeWitness(assocTypeReq))
+        continue;
+
       const auto &TWInfo = getTypeWitnessSubstAndDecl(assocTypeReq, resolver);
       if (f(assocTypeReq, TWInfo.first, TWInfo.second))
         return true;
@@ -254,7 +258,7 @@ public:
 
   /// Determine whether this protocol conformance is visible from the
   /// given declaration context.
-  bool isVisibleFrom(DeclContext *dc) const;
+  bool isVisibleFrom(const DeclContext *dc) const;
 
   /// Determine whether the witness for the given requirement
   /// is either the default definition or was otherwise deduced.
@@ -286,6 +290,7 @@ public:
   AbstractStorageDecl *getBehaviorDecl() const;
   
   void dump() const;
+  void dump(llvm::raw_ostream &out, unsigned indent = 0) const;
 
 private:
   friend class Substitution;
@@ -661,7 +666,11 @@ public:
   /// Get the declaration context that contains the conforming extension or
   /// nominal type declaration.
   DeclContext *getDeclContext() const {
-    return getType()->getClassOrBoundGenericClass();
+    auto bgc = getType()->getClassOrBoundGenericClass();
+
+    // In some cases, we may not have a BGC handy, in which case we should
+    // delegate to the inherited conformance for the decl context.
+    return bgc ? bgc : InheritedConformance->getDeclContext();
   }
 
   /// Retrieve the state of this conformance.

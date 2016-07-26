@@ -69,11 +69,15 @@ Parser::parseGenericParameters(SourceLoc LAngleLoc) {
     if (Tok.is(tok::colon)) {
       (void)consumeToken();
       ParserResult<TypeRepr> Ty;
-      if (Tok.getKind() == tok::identifier ||
-          Tok.getKind() == tok::code_complete) {
-        Ty = parseTypeIdentifier();
-      } else if (Tok.getKind() == tok::kw_protocol) {
-        Ty = parseTypeComposition();
+      
+      if (Tok.isAny(tok::identifier, tok::code_complete, tok::kw_protocol, tok::kw_Any)) {
+        Ty = parseTypeIdentifierOrTypeComposition();
+      } else if (Tok.is(tok::kw_class)) {
+        diagnose(Tok, diag::unexpected_class_constraint);
+        diagnose(Tok, diag::suggest_anyobject, Name)
+          .fixItReplace(Tok.getLoc(), "AnyObject");
+        consumeToken();
+        Invalid = true;
       } else {
         diagnose(Tok, diag::expected_generics_type_restriction, Name);
         Invalid = true;
@@ -161,7 +165,7 @@ ParserResult<GenericParamList> Parser::maybeParseGenericParams() {
     if (outer_gpl)
       gpl->setOuterParameters(outer_gpl);
     outer_gpl = gpl;
-  } while(startsWithLess(Tok));
+  } while (startsWithLess(Tok));
   return makeParserResult(gpl);
 }
 
@@ -206,12 +210,8 @@ ParserStatus Parser::parseGenericWhereClause(
       SourceLoc ColonLoc = consumeToken();
 
       // Parse the protocol or composition.
-      ParserResult<TypeRepr> Protocol;
-      if (Tok.is(tok::kw_protocol)) {
-        Protocol = parseTypeComposition();
-      } else {
-        Protocol = parseTypeIdentifier();
-      }
+      ParserResult<TypeRepr> Protocol = parseTypeIdentifierOrTypeComposition();
+      
       if (Protocol.isNull()) {
         Status.setIsParseError();
         if (Protocol.hasCodeCompletion())
@@ -254,3 +254,43 @@ ParserStatus Parser::parseGenericWhereClause(
 
   return Status;
 }
+
+
+/// Parse a free-standing where clause attached to a declaration, adding it to
+/// a generic parameter list that may (or may not) already exist.
+ParserStatus Parser::
+parseFreestandingGenericWhereClause(GenericParamList *&genericParams,
+                                    WhereClauseKind kind) {
+  assert(Tok.is(tok::kw_where) && "Shouldn't call this without a where");
+  
+  // Push the generic arguments back into a local scope so that references will
+  // find them.
+  Scope S(this, ScopeKind::Generics);
+  
+  if (genericParams)
+    for (auto pd : genericParams->getParams())
+      addToScope(pd);
+  
+  SmallVector<RequirementRepr, 4> Requirements;
+  if (genericParams)
+    Requirements.append(genericParams->getRequirements().begin(),
+                        genericParams->getRequirements().end());
+  
+  SourceLoc WhereLoc;
+  bool FirstTypeInComplete;
+  auto result = parseGenericWhereClause(WhereLoc, Requirements,
+                                        FirstTypeInComplete);
+  if (result.shouldStopParsing() || Requirements.empty())
+    return result;
+
+  if (!genericParams)
+    diagnose(WhereLoc, diag::where_without_generic_params, unsigned(kind));
+  else
+    genericParams = GenericParamList::create(Context,
+                                             genericParams->getLAngleLoc(),
+                                             genericParams->getParams(),
+                                             WhereLoc, Requirements,
+                                             genericParams->getRAngleLoc());
+  return ParserStatus();
+}
+

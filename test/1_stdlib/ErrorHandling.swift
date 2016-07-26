@@ -7,13 +7,6 @@
 
 import StdlibUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-import SwiftPrivate
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 var NoisyCount = 0
 
@@ -21,7 +14,7 @@ class Noisy {
   init() { NoisyCount += 1 }
   deinit { NoisyCount -= 1 }
 }
-enum SillyError : ErrorProtocol { case JazzHands }
+enum SillyError : Error { case JazzHands }
 
 var ErrorHandlingTests = TestSuite("ErrorHandling")
 
@@ -240,7 +233,7 @@ ErrorHandlingTests.test("ErrorHandling/contains") {
 ErrorHandlingTests.test("ErrorHandling/reduce") {
   var loopCount = 0
   do {
-    let x: Int = try [1, 2, 3, 4, 5].reduce(0, combine: {
+    let x: Int = try [1, 2, 3, 4, 5].reduce(0) {
       (x: Int, y: Int) -> Int
     in
       loopCount += 1
@@ -249,7 +242,7 @@ ErrorHandlingTests.test("ErrorHandling/reduce") {
         throw SillyError.JazzHands
       }
       return total
-    })
+    }
     expectUnreachable()
   } catch {}
   expectEqual(loopCount, 3)

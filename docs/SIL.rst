@@ -109,13 +109,13 @@ IR.
   functions. Then it rewrites all specialized usages of the generic
   to a direct call of the appropriate specialized function.
 - **Witness and VTable Devirtualization** for a given type looks up
-  the associated method from a class's vtable or a types witness table
+  the associated method from a class's vtable or a type witness table
   and replaces the indirect virtual call with a call to the mapped
   function.
 - **Performance Inlining**
 - **Reference Counting Optimizations**
 - **Memory Promotion/Optimizations**
-- **High-level domain specific optimizations** The swift compiler implements
+- **High-level domain specific optimizations** The Swift compiler implements
   high-level optimizations on basic Swift containers such as Array or String.
   Domain specific optimizations require a defined interface between
   the standard library and the optimizer. More details can be found here:
@@ -152,7 +152,7 @@ Here is an example of a ``.sil`` file::
   }
 
   // Declare a Swift function. The body is ignored by SIL.
-  func taxicabNorm(a:Point) -> Double {
+  func taxicabNorm(_ a:Point) -> Double {
     return a.x + a.y
   }
 
@@ -306,17 +306,17 @@ unrestricted type, it is lowered as if the pattern were replaced with
 a type sharing the same structure but replacing all materializable
 types with fresh type variables.
 
-For example, if ``g`` has type ``Generator<(Int,Int) -> Float>``, ``g.fn`` is
-lowered using the pattern ``() -> T``, which eventually causes ``(Int,Int)
+For example, if ``g`` has type ``Generator<(Int, Int) -> Float>``, ``g.fn`` is
+lowered using the pattern ``() -> T``, which eventually causes ``(Int, Int)
 -> Float`` to be lowered using the pattern ``T``, which is the same as
 lowering it with the pattern ``U -> V``; the result is that ``g.fn``
 has the following lowered type::
 
-  @callee_owned () -> @owned @callee_owned (@in (Int,Int)) -> @out Float.
+  @callee_owned () -> @owned @callee_owned (@in (Int, Int)) -> @out Float.
 
 As another example, suppose that ``h`` has type
-``Generator<(Int, @inout Int) -> Float>``.  Neither ``(Int, @inout Int)``
-nor ``@inout Int`` are potential results of substitution because they
+``Generator<(Int, inout Int) -> Float>``.  Neither ``(Int, inout Int)``
+nor ``inout Int`` are potential results of substitution because they
 aren't materializable, so ``h.fn`` has the following lowered type::
 
   @callee_owned () -> @owned @callee_owned (@in Int, @inout Int) -> @out Float
@@ -660,7 +660,7 @@ types. Function types are transformed in order to encode additional attributes:
 
 - The **fully uncurried representation** of the function type, with
   all of the curried argument clauses flattened into a single argument
-  clause. For instance, a curried function ``func foo(x:A)(y:B) -> C``
+  clause. For instance, a curried function ``func foo(_ x:A)(y:B) -> C``
   might be emitted as a function of type ``((y:B), (x:A)) -> C``.  The
   exact representation depends on the function's `calling
   convention`_, which determines the exact ordering of currying
@@ -809,7 +809,7 @@ Debug Information
   sil-scope ::= 'sil_scope' [0-9]+ '{'
                    sil-loc
                    'parent' scope-parent
-                   ('inlined_at' sil-scope-ref )?
+                   ('inlined_at' sil-scope-ref)?
                 '}'
   scope-parent ::= sil-function-name ':' sil-type
   scope-parent ::= sil-scope-ref
@@ -865,14 +865,14 @@ entity discriminators:
 - ``ivarinitializer``: a class's ivar initializer
 - ``defaultarg.``\ *n*: the default argument-generating function for
   the *n*\ -th argument of a Swift ``func``
-- ``foreign``: a specific entry point for C/objective-C interoperability
+- ``foreign``: a specific entry point for C/Objective-C interoperability
 
 Methods and curried function definitions in Swift also have multiple
 "uncurry levels" in SIL, representing the function at each possible
 partial application level. For a curried function declaration::
 
   // Module example
-  func foo(x:A)(y:B)(z:C) -> D
+  func foo(_ x:A)(y:B)(z:C) -> D
 
 The declaration references and types for the different uncurry levels are as
 follows::
@@ -1216,8 +1216,8 @@ flow, such as a non-``Void`` function failing to ``return`` a value, or a
 ``switch`` statement failing to cover all possible values of its subject.
 The guaranteed dead code elimination pass can eliminate truly unreachable
 basic blocks, or ``unreachable`` instructions may be dominated by applications
-of ``@noreturn`` functions. An ``unreachable`` instruction that survives
-guaranteed DCE and is not immediately preceded by a ``@noreturn``
+of functions returning uninhabited types. An ``unreachable`` instruction that
+survives guaranteed DCE and is not immediately preceded by a no-return
 application is a dataflow error.
 
 Runtime Failure
@@ -1269,14 +1269,14 @@ Tuples in the input type of the function are recursively destructured into
 separate arguments, both in the entry point basic block of the callee, and
 in the ``apply`` instructions used by callers::
 
-  func foo(x:Int, y:Int)
+  func foo(_ x:Int, y:Int)
   
   sil @foo : $(x:Int, y:Int) -> () {
   entry(%x : $Int, %y : $Int):
     ...
   }
 
-  func bar(x:Int, y:(Int, Int))
+  func bar(_ x:Int, y:(Int, Int))
 
   sil @bar : $(x:Int, y:(Int, Int)) -> () {
   entry(%x : $Int, %y0 : $Int, %y1 : $Int):
@@ -1301,7 +1301,7 @@ in the ``apply`` instructions used by callers::
 Calling a function with trivial value types as inputs and outputs
 simply passes the arguments by value. This Swift function::
 
-  func foo(x:Int, y:Float) -> UnicodeScalar
+  func foo(_ x:Int, y:Float) -> UnicodeScalar
 
   foo(x, y)
 
@@ -1326,7 +1326,7 @@ same way. This Swift function::
 
   class A {}
 
-  func bar(x:A) -> (Int, A) { ... }
+  func bar(_ x:A) -> (Int, A) { ... }
 
   bar(x)
 
@@ -1355,7 +1355,7 @@ returning. This Swift function::
 
    @API struct A {}
 
-  func bas(x:A, y:Int) -> A { return x }
+  func bas(_ x:A, y:Int) -> A { return x }
 
   var z = bas(x, y)
   // ... use z ...
@@ -1381,7 +1381,7 @@ individually according to the above convention. This Swift function::
 
   @API struct A {}
 
-  func zim(x:Int, y:A, (z:Int, w:(A, Int)))
+  func zim(_ x:Int, y:A, (z:Int, w:(A, Int)))
 
   zim(x, y, (z, w))
 
@@ -1405,7 +1405,7 @@ Variadic Arguments
 Variadic arguments and tuple elements are packaged into an array and passed as
 a single array argument. This Swift function::
 
-  func zang(x:Int, (y:Int, z:Int...), v:Int, w:Int...)
+  func zang(_ x:Int, (y:Int, z:Int...), v:Int, w:Int...)
 
   zang(x, (y, z0, z1), v, w0, w1, w2)
 
@@ -1424,7 +1424,7 @@ each "uncurry level" of the function. When a function is uncurried, its
 outermost argument clauses are combined into a tuple in right-to-left order.
 For the following declaration::
 
-  func curried(x:A)(y:B)(z:C)(w:D) -> Int {}
+  func curried(_ x:A)(y:B)(z:C)(w:D) -> Int {}
 
 The types of the SIL entry points are as follows::
 
@@ -1447,7 +1447,7 @@ getter prior to calling the function and to write back to the property
 on return by loading from the buffer and invoking the setter with the final
 value. This Swift function::
 
-  func inout(x:@inout Int) {
+  func inout(_ x: inout Int) {
     x = 1
   }
 
@@ -1470,7 +1470,7 @@ as the inner argument clause(s). When uncurried, the "self" argument is thus
 passed last::
 
   struct Foo {
-    func method(x:Int) -> Int {}
+    func method(_ x:Int) -> Int {}
   }
 
   sil @Foo_method_1 : $((x : Int), @inout Foo) -> Int { ... }
@@ -2240,6 +2240,20 @@ index_raw_pointer
 Given a ``Builtin.RawPointer`` value ``%0``, returns a pointer value at the
 byte offset ``%1`` relative to ``%0``.
 
+bind_memory
+```````````
+
+::
+
+  sil-instruction ::= 'bind_memory' sil-operand ',' sil-operand 'to' sil-type
+
+  bind_memory %0 : $Builtin.RawPointer, %1 : $Builtin.Word to $T
+  // %0 must be of $Builtin.RawPointer type
+  // %1 must be of $Builtin.Word type
+
+Binds memory at ``Builtin.RawPointer`` value ``%0`` to type ``$T`` with enough
+capacity to hold ``%1`` values. See SE-0107: UnsafeRawPointer.
+   
 Reference Counting
 ~~~~~~~~~~~~~~~~~~
 
@@ -2496,6 +2510,36 @@ copy_block
 Performs a copy of an Objective-C block. Unlike retains of other
 reference-counted types, this can produce a different value from the operand
 if the block is copied from the stack to the heap.
+
+builtin "unsafeGuaranteed"
+``````````````````````````
+
+::
+
+  sil-instruction := 'builtin' '"unsafeGuaranteed"' '<' sil-type '>' '(' sil-operand')' ':' sil-type
+
+  %1 = builtin "unsafeGuaranteed"<T>(%0 : $T) : ($T, Builtin.Int1)
+  // $T must be of AnyObject type.
+
+Asserts that there exists another reference of the value ``%0`` for the scope
+delineated by the call of this builtin up to the first call of a ``builtin
+"unsafeGuaranteedEnd"`` instruction that uses the second element ``%1.1`` of the
+returned value. If no such instruction can be found nothing can be assumed. This
+assertions holds for uses of the first tuple element of the returned value
+``%1.0`` within this scope. The returned reference value equals the input
+``%0``.
+
+builtin "unsafeGuaranteedEnd"
+`````````````````````````````
+
+::
+
+  sil-instruction := 'builtin' '"unsafeGuaranteedEnd"' '(' sil-operand')'
+
+  %1 = builtin "unsafeGuaranteedEnd"(%0 : $Builtin.Int1)
+  // $T must be of AnyObject type.
+
+Ends the scope for the ``builtin "unsafeGuaranteed"`` instruction.
 
 Literals
 ~~~~~~~~
@@ -2803,7 +2847,7 @@ to register arguments. This should be fixed.
 This instruction is used to implement both curry thunks and closures. A
 curried function in Swift::
 
-  func foo(a:A)(b:B)(c:C)(d:D) -> E { /* body of foo */ }
+  func foo(_ a:A)(b:B)(c:C)(d:D) -> E { /* body of foo */ }
 
 emits curry thunks in SIL as follows (retains and releases omitted for
 clarity)::
@@ -2839,8 +2883,8 @@ clarity)::
 A local function in Swift that captures context, such as ``bar`` in the
 following example::
 
-  func foo(x:Int) -> Int {
-    func bar(y:Int) -> Int {
+  func foo(_ x:Int) -> Int {
+    func bar(_ y:Int) -> Int {
       return x + y
     }
     return bar(1)
@@ -3385,7 +3429,7 @@ container may use one of several representations:
   * `init_existential_metatype`_
   * `open_existential_metatype`_
 
-- **Boxed existential containers**: The standard library ``ErrorProtocol`` protocol
+- **Boxed existential containers**: The standard library ``Error`` protocol
   uses a size-optimized reference-counted container, which indirectly stores
   the conforming value. Boxed existential containers can be ``retain``-ed
   and ``release``-d. The following instructions manipulate boxed existential
@@ -3398,22 +3442,22 @@ container may use one of several representations:
 
 Some existential types may additionally support specialized representations
 when they contain certain known concrete types. For example, when Objective-C
-interop is available, the ``ErrorProtocol`` protocol existential supports
+interop is available, the ``Error`` protocol existential supports
 a class existential container representation for ``NSError`` objects, so it
 can be initialized from one using ``init_existential_ref`` instead of the
 more expensive ``alloc_existential_box``::
 
   bb(%nserror: $NSError):
-    // The slow general way to form an ErrorProtocol, allocating a box and
+    // The slow general way to form an Error, allocating a box and
     // storing to its value buffer:
-    %error1 = alloc_existential_box $ErrorProtocol, $NSError
-    %addr = project_existential_box $NSError in %error1 : $ErrorProtocol
+    %error1 = alloc_existential_box $Error, $NSError
+    %addr = project_existential_box $NSError in %error1 : $Error
     strong_retain %nserror: $NSError
     store %nserror to %addr : $NSError
 
     // The fast path supported for NSError:
     strong_retain %nserror: $NSError
-    %error2 = init_existential_ref %nserror: $NSError, $ErrorProtocol
+    %error2 = init_existential_ref %nserror: $NSError, $Error
 
 init_existential_addr
 `````````````````````
@@ -3670,9 +3714,9 @@ pointer_to_address
 ``````````````````
 ::
 
-  sil-instruction ::= 'pointer_to_address' sil-operand 'to' sil-type
+  sil-instruction ::= 'pointer_to_address' sil-operand 'to' ('[' 'strict' ']')? sil-type
 
-  %1 = pointer_to_address %0 : $Builtin.RawPointer to $*T
+  %1 = pointer_to_address %0 : $Builtin.RawPointer to [strict] $*T
   // %1 will be of type $*T
 
 Creates an address value corresponding to the ``Builtin.RawPointer`` value
@@ -3682,6 +3726,14 @@ address. It is undefined behavior to cast the ``RawPointer`` back to any type
 other than its original address type or `layout compatible types`_. It is
 also undefined behavior to cast a ``RawPointer`` from a heap object to any
 address type.
+
+The ``strict`` flag indicates whether the returned address adheres to
+strict aliasing.  If true, then the type of each memory access
+dependent on this address must be consistent with the memory's bound
+type. A memory access from an address that is not strict cannot have
+its address substituted with a strict address, even if other nearby
+memory accesses at the same location are strict.
+
 
 unchecked_ref_cast
 ``````````````````
@@ -3860,12 +3912,8 @@ in the following ways:
 - A class tuple element of the destination type may be a superclass or
   subclass of the source type's corresponding tuple element.
 
-The function types may also differ in attributes, with the following
-caveats:
-
-- The ``convention`` attribute cannot be changed.
-- A ``@noreturn`` function may be converted to a non-``@noreturn``
-  type and vice-versa.
+The function types may also differ in attributes, except that the
+``convention`` attribute cannot be changed.
 
 thin_function_to_pointer
 ````````````````````````
@@ -4081,7 +4129,7 @@ unreachable
 Indicates that control flow must not reach the end of the current basic block.
 It is a dataflow error if an unreachable terminator is reachable from the entry
 point of a function and is not immediately preceded by an ``apply`` of a
-``@noreturn`` function.
+no-return function.
 
 return
 ``````

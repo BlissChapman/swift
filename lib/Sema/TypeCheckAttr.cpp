@@ -59,7 +59,6 @@ public:
   IGNORED_ATTR(Inline)
   IGNORED_ATTR(NSApplicationMain)
   IGNORED_ATTR(NSCopying)
-  IGNORED_ATTR(NoReturn)
   IGNORED_ATTR(NonObjC)
   IGNORED_ATTR(ObjC)
   IGNORED_ATTR(ObjCBridged)
@@ -79,9 +78,69 @@ public:
   IGNORED_ATTR(Testable)
   IGNORED_ATTR(UIApplicationMain)
   IGNORED_ATTR(UnsafeNoObjCTaggedPointer)
-  IGNORED_ATTR(WarnUnusedResult)
+  IGNORED_ATTR(Versioned)
   IGNORED_ATTR(ShowInInterface)
+  IGNORED_ATTR(DiscardableResult)
 #undef IGNORED_ATTR
+
+  // @noreturn has been replaced with a 'Never' return type.
+  void visitNoReturnAttr(NoReturnAttr *attr) {
+    if (auto FD = dyn_cast<FuncDecl>(D)) {
+      auto &SM = TC.Context.SourceMgr;
+
+      auto diag = TC.diagnose(attr->getLocation(),
+                              diag::noreturn_not_supported);
+      auto range = attr->getRangeWithAt();
+      if (range.isValid())
+        range.End = range.End.getAdvancedLoc(1);
+      diag.fixItRemove(range);
+
+      auto *last = FD->getParameterList(FD->getNumParameterLists() - 1);
+
+      // If the declaration already has a result type, we're going
+      // to change it to 'Never'.
+      bool hadResultType = false;
+      bool isEndOfLine = false;
+      SourceLoc resultLoc;
+      if (FD->getBodyResultTypeLoc().hasLocation()) {
+        const auto &typeLoc = FD->getBodyResultTypeLoc();
+        hadResultType = true;
+        resultLoc = typeLoc.getSourceRange().Start;
+
+      // If the function 'throws', insert the result type after the
+      // 'throws'.
+      } else {
+        if (FD->getThrowsLoc().isValid()) {
+          resultLoc = FD->getThrowsLoc();
+
+        // Otherwise, insert the result type after the final parameter
+        // list.
+        } else if (last->getRParenLoc().isValid()) {
+          resultLoc = last->getRParenLoc();
+        }
+
+        if (Lexer::getLocForEndOfToken(SM, resultLoc).getAdvancedLoc(1) ==
+            Lexer::getLocForEndOfLine(SM, resultLoc))
+          isEndOfLine = true;
+
+        resultLoc = Lexer::getLocForEndOfToken(SM, resultLoc);
+      }
+
+      if (hadResultType) {
+        diag.fixItReplace(resultLoc, "Never");
+      } else {
+        std::string fix = " -> Never";
+
+        if (!isEndOfLine)
+          fix = fix + " ";
+
+        diag.fixItInsert(resultLoc, fix);
+      }
+
+      FD->getBodyResultTypeLoc() = TypeLoc::withoutLoc(
+          TC.Context.getNeverType());
+    }
+  }
 
   void visitAlignmentAttr(AlignmentAttr *attr) {
     // Alignment must be a power of two.
@@ -95,6 +154,15 @@ public:
   }
   void visitNoEscapeAttr(NoEscapeAttr *attr) {
     TC.checkNoEscapeAttr(cast<ParamDecl>(D), attr);
+  }
+
+  void visitEscapingAttr(EscapingAttr *attr) {
+    auto *PD = cast<ParamDecl>(D);
+    auto *FTy = PD->getType()->getAs<FunctionType>();
+    if (FTy == 0) {
+      TC.diagnose(attr->getLocation(), diag::escaping_function_type);
+      attr->setInvalid();
+    }
   }
 
   void visitTransparentAttr(TransparentAttr *attr);
@@ -139,6 +207,7 @@ public:
   void visitLazyAttr(LazyAttr *attr);
   void visitIBDesignableAttr(IBDesignableAttr *attr);
   void visitIBInspectableAttr(IBInspectableAttr *attr);
+  void visitGKInspectableAttr(GKInspectableAttr *attr);
   void visitIBOutletAttr(IBOutletAttr *attr);
   void visitLLDBDebuggerFunctionAttr(LLDBDebuggerFunctionAttr *attr);
   void visitNSManagedAttr(NSManagedAttr *attr);
@@ -187,9 +256,11 @@ void AttributeEarlyChecker::visitTransparentAttr(TransparentAttr *attr) {
 void AttributeEarlyChecker::visitMutationAttr(DeclAttribute *attr) {
   FuncDecl *FD = cast<FuncDecl>(D);
 
-  if (!FD->getDeclContext()->isTypeContext())
+  auto contextTy = FD->getDeclContext()->getDeclaredTypeInContext();
+  if (!contextTy)
     return diagnoseAndRemoveAttr(attr, diag::mutating_invalid_global_scope);
-  if (FD->getDeclContext()->getDeclaredTypeInContext()->hasReferenceSemantics())
+
+  if (contextTy->hasReferenceSemantics())
     return diagnoseAndRemoveAttr(attr, diag::mutating_invalid_classes);
   
   // Verify we don't have both mutating and nonmutating.
@@ -238,7 +309,17 @@ void AttributeEarlyChecker::visitIBInspectableAttr(IBInspectableAttr *attr) {
   auto *VD = cast<VarDecl>(D);
   if (!VD->getDeclContext()->getAsClassOrClassExtensionContext() ||
       VD->isStatic())
-    return diagnoseAndRemoveAttr(attr, diag::invalid_ibinspectable);
+    return diagnoseAndRemoveAttr(attr, diag::invalid_ibinspectable,
+                                 attr->getAttrName());
+}
+
+void AttributeEarlyChecker::visitGKInspectableAttr(GKInspectableAttr *attr) {
+  // Only instance properties can be 'GKInspectable'.
+  auto *VD = cast<VarDecl>(D);
+  if (!VD->getDeclContext()->getAsClassOrClassExtensionContext() ||
+      VD->isStatic())
+    return diagnoseAndRemoveAttr(attr, diag::invalid_ibinspectable,
+                                 attr->getAttrName());
 }
 
 void AttributeEarlyChecker::visitSILStoredAttr(SILStoredAttr *attr) {
@@ -621,6 +702,7 @@ public:
     IGNORED_ATTR(Dynamic)
     IGNORED_ATTR(Exported)
     IGNORED_ATTR(Convenience)
+    IGNORED_ATTR(GKInspectable)
     IGNORED_ATTR(IBDesignable)
     IGNORED_ATTR(IBInspectable)
     IGNORED_ATTR(IBOutlet) // checked early.
@@ -652,6 +734,11 @@ public:
     IGNORED_ATTR(Testable)
     IGNORED_ATTR(WarnUnqualifiedAccess)
     IGNORED_ATTR(ShowInInterface)
+    IGNORED_ATTR(DiscardableResult)
+    IGNORED_ATTR(Escaping)
+
+    // FIXME: We actually do have things to enforce for versioned API.
+    IGNORED_ATTR(Versioned)
 #undef IGNORED_ATTR
 
   void visitAvailableAttr(AvailableAttr *attr);
@@ -664,7 +751,6 @@ public:
   void visitRequiredAttr(RequiredAttr *attr);
   void visitRethrowsAttr(RethrowsAttr *attr);
 
-  bool visitAbstractAccessibilityAttr(AbstractAccessibilityAttr *attr);
   void visitAccessibilityAttr(AccessibilityAttr *attr);
   void visitSetterAccessibilityAttr(SetterAccessibilityAttr *attr);
 
@@ -686,7 +772,6 @@ public:
   void visitPostfixAttr(PostfixAttr *attr) { checkOperatorAttribute(attr); }
   void visitPrefixAttr(PrefixAttr *attr) { checkOperatorAttribute(attr); }
 
-  void visitWarnUnusedResultAttr(WarnUnusedResultAttr *attr);
   void visitSpecializeAttr(SpecializeAttr *attr);
 };
 } // end anonymous namespace
@@ -1249,25 +1334,6 @@ void AttributeChecker::visitRethrowsAttr(RethrowsAttr *attr) {
   attr->setInvalid();
 }
 
-bool AttributeChecker::visitAbstractAccessibilityAttr(
-    AbstractAccessibilityAttr *attr) {
-  DeclContext *dc = D->getDeclContext();
-  if (auto nominal = dc->getAsNominalTypeOrNominalTypeExtensionContext()) {
-    Accessibility typeAccess = nominal->getFormalAccess();
-    if (attr->getAccess() > typeAccess) {
-      auto diag = TC.diagnose(attr->getLocation(),
-                              diag::access_control_member_more,
-                              attr->getAccess(),
-                              D->getDescriptiveKind(),
-                              typeAccess,
-                              nominal->getDescriptiveKind());
-      swift::fixItAccessibility(diag, cast<ValueDecl>(D), typeAccess);
-      return true;
-    }
-  }
-  return false;
-}
-
 void AttributeChecker::visitAccessibilityAttr(AccessibilityAttr *attr) {
   if (auto extension = dyn_cast<ExtensionDecl>(D)) {
     Type extendedTy = extension->getExtendedType();
@@ -1284,7 +1350,13 @@ void AttributeChecker::visitAccessibilityAttr(AccessibilityAttr *attr) {
 
   } else if (auto extension = dyn_cast<ExtensionDecl>(D->getDeclContext())) {
     TC.computeDefaultAccessibility(extension);
-    if (attr->getAccess() > extension->getMaxAccessibility()) {
+    Accessibility maxAccess = extension->getMaxAccessibility();
+    if (attr->getAccess() > maxAccess) {
+      if (maxAccess == Accessibility::FilePrivate &&
+          !TC.Context.LangOpts.EnableSwift3Private) {
+        maxAccess = Accessibility::Private;
+      }
+
       // FIXME: It would be nice to say what part of the requirements actually
       // end up being problematic.
       auto diag =
@@ -1292,9 +1364,8 @@ void AttributeChecker::visitAccessibilityAttr(AccessibilityAttr *attr) {
                       diag::access_control_ext_requirement_member_more,
                       attr->getAccess(),
                       D->getDescriptiveKind(),
-                      extension->getMaxAccessibility());
-      swift::fixItAccessibility(diag, cast<ValueDecl>(D),
-                                extension->getMaxAccessibility());
+                      maxAccess);
+      swift::fixItAccessibility(diag, cast<ValueDecl>(D), maxAccess);
       return;
     }
 
@@ -1309,8 +1380,6 @@ void AttributeChecker::visitAccessibilityAttr(AccessibilityAttr *attr) {
       return;
     }
   }
-
-  visitAbstractAccessibilityAttr(attr);
 }
 
 void
@@ -1333,45 +1402,6 @@ AttributeChecker::visitSetterAccessibilityAttr(SetterAccessibilityAttr *attr) {
                 getterAccess, storageKind, attr->getAccess());
     attr->setInvalid();
     return;
-  }
-
-  visitAbstractAccessibilityAttr(attr);
-}
-
-void AttributeChecker::visitWarnUnusedResultAttr(WarnUnusedResultAttr *attr) {
-  if (!attr->getMutableVariant().empty()) {
-    // mutable_variant only makes sense for non-mutating methods where
-    // it's possible to have a mutating variant.
-    auto func = dyn_cast<FuncDecl>(D);
-    if (!func) {
-      TC.diagnose(attr->getLocation(),
-                  diag::attr_warn_unused_result_mutable_variable, 0);
-      return;
-    }
-
-    if (!func->getDeclContext()->isTypeContext()) {
-      TC.diagnose(attr->getLocation(),
-                  diag::attr_warn_unused_result_mutable_variable, 1);
-      return;
-    }
-
-    if (!func->isInstanceMember()) {
-      TC.diagnose(attr->getLocation(),
-                  diag::attr_warn_unused_result_mutable_variable, 2);
-      return;
-    }
-
-    if (func->getExtensionType()->getClassOrBoundGenericClass()) {
-      TC.diagnose(attr->getLocation(),
-                  diag::attr_warn_unused_result_mutable_variable, 3);
-      return;      
-    }
-
-    if (func->isMutating()) {
-      TC.diagnose(attr->getLocation(),
-                  diag::attr_warn_unused_result_mutable_variable, 4);
-      return;      
-    }
   }
 }
 
@@ -1553,6 +1583,13 @@ void TypeChecker::checkAutoClosureAttr(ParamDecl *PD, AutoClosureAttr *attr) {
   if (FTy->isAutoClosure())
     return;
 
+  // This decl attribute has been moved to being a type attribute.
+  auto text = attr->isEscaping() ? "@autoclosure(escaping) " : "@autoclosure ";
+  diagnose(attr->getLocation(), diag::attr_decl_attr_now_on_type,
+           "@autoclosure")
+    .fixItRemove(attr->getRangeWithAt())
+    .fixItInsert(PD->getTypeLoc().getSourceRange().Start, text);
+
   auto *FuncTyInput = FTy->getInput()->getAs<TupleType>();
   if (!FuncTyInput || FuncTyInput->getNumElements() != 0) {
     diagnose(attr->getLocation(), diag::autoclosure_function_input_nonunit);
@@ -1594,6 +1631,19 @@ void TypeChecker::checkNoEscapeAttr(ParamDecl *PD, NoEscapeAttr *attr) {
   // Just stop if we've already applied this attribute.
   if (FTy->isNoEscape())
     return;
+
+  // This range can be implicit e.g. if we're in the middle of diagnosing
+  // @autoclosure.
+  auto attrRemovalRange = attr->getRangeWithAt();
+  if (attrRemovalRange.isValid()) {
+    // Take the attribute, the '@', and the trailing space.
+    attrRemovalRange.End = attrRemovalRange.End.getAdvancedLoc(1);
+  }
+  
+  // This decl attribute has been moved to being a type attribute.
+  diagnose(attr->getLocation(), diag::attr_decl_attr_now_on_type, "@noescape")
+    .fixItRemove(attrRemovalRange) 
+    .fixItInsert(PD->getTypeLoc().getSourceRange().Start, "@noescape ");
 
   // Change the type to include the noescape bit.
   PD->overwriteType(FunctionType::get(FTy->getInput(), FTy->getResult(),
@@ -1662,25 +1712,6 @@ void TypeChecker::checkOwnershipAttr(VarDecl *var, OwnershipAttr *attr) {
 
   // Change the type to the appropriate reference storage type.
   var->overwriteType(ReferenceStorageType::get(type, ownershipKind, Context));
-}
-
-AnyFunctionType::ExtInfo
-TypeChecker::applyFunctionTypeAttributes(AbstractFunctionDecl *func,
-                                         unsigned i) {
-  auto info = AnyFunctionType::ExtInfo();
-
-  // For curried functions, 'throws' and 'noreturn' only applies to the
-  // innermost function.
-  if (i == 0) {
-    info = info.withIsNoReturn(func->getAttrs().hasAttribute<NoReturnAttr>());
-
-    if (auto FD = dyn_cast<FuncDecl>(func))
-      info = info.withThrows(FD->getThrowsLoc().isValid());
-    else if (auto CD = dyn_cast<ConstructorDecl>(func))
-      info = info.withThrows(CD->getThrowsLoc().isValid());
-  }
-
-  return info;
 }
 
 Optional<Diag<>>

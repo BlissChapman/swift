@@ -10,8 +10,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#if defined(__APPLE__)
 #include <Foundation/Foundation.h>
 
+#include "swift/Runtime/Config.h"
+
+SWIFT_CC(swift)
 extern "C" const char *
 swift_stdlib_getSystemVersionPlistProperty(const char *PropertyName) {
   // This function is implemented in Objective-C because Swift does not support
@@ -30,4 +34,5 @@ swift_stdlib_getSystemVersionPlistProperty(const char *PropertyName) {
   [SystemVersion release];
   return Result;
 }
+#endif
 

@@ -5,12 +5,12 @@
 
 import Foundation
 
-let opts: NSBinarySearchingOptions = [.firstEqual, .insertionIndex]
+let opts: BinarySearchingOptions = [.firstEqual, .insertionIndex]
 
 // CHECK: true
-print(opts.intersect([.lastEqual, .insertionIndex]) == .insertionIndex)
+print(opts.intersection([.lastEqual, .insertionIndex]) == .insertionIndex)
 // CHECK: false
-print(!opts.intersect(.lastEqual).isEmpty)
+print(!opts.intersection(.lastEqual).isEmpty)
 
 // CHECK: {{^}}0 0{{$}}
-print("\(([] as NSBinarySearchingOptions).rawValue) \(NSBinarySearchingOptions(rawValue: 0).rawValue)")
+print("\(([] as BinarySearchingOptions).rawValue) \(BinarySearchingOptions(rawValue: 0).rawValue)")

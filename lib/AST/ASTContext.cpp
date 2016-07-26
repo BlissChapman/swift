@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/AST/ASTContext.h"
+#include "ForeignRepresentationInfo.h"
 #include "swift/Strings.h"
 #include "swift/AST/ArchetypeBuilder.h"
 #include "swift/AST/AST.h"
@@ -29,8 +30,11 @@
 #include "swift/AST/NameLookup.h"
 #include "swift/AST/RawComment.h"
 #include "swift/AST/TypeCheckerDebugConsumer.h"
+#include "swift/Basic/Fallthrough.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Basic/StringExtras.h"
+#include "swift/Parse/Lexer.h" // bad dependency
+#include "clang/AST/Attr.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/Preprocessor.h"
@@ -44,6 +48,7 @@
 using namespace swift;
 
 LazyResolver::~LazyResolver() = default;
+DelegatingLazyResolver::~DelegatingLazyResolver() = default;
 void ModuleLoader::anchor() {}
 void ClangModuleLoader::anchor() {}
 
@@ -132,6 +137,14 @@ struct ASTContext::Implementation {
   /// The declaration of Swift.ImplicitlyUnwrappedOptional<T>.None.
   EnumElementDecl *ImplicitlyUnwrappedOptionalNoneDecl = nullptr;
   
+  /// The declaration of Swift.UnsafeMutableRawPointer.
+  NominalTypeDecl *UnsafeMutableRawPointerDecl = nullptr;
+  VarDecl *UnsafeMutableRawPointerMemoryDecl = nullptr;
+
+  /// The declaration of Swift.UnsafeRawPointer.
+  NominalTypeDecl *UnsafeRawPointerDecl = nullptr;
+  VarDecl *UnsafeRawPointerMemoryDecl = nullptr;
+
   /// The declaration of Swift.UnsafeMutablePointer<T>.
   NominalTypeDecl *UnsafeMutablePointerDecl = nullptr;
   VarDecl *UnsafeMutablePointerMemoryDecl = nullptr;
@@ -140,6 +153,9 @@ struct ASTContext::Implementation {
   NominalTypeDecl *UnsafePointerDecl = nullptr;
   VarDecl *UnsafePointerMemoryDecl = nullptr;
   
+  /// The declaration of Swift.OpaquePointer.
+  NominalTypeDecl *OpaquePointerDecl = nullptr;
+  
   /// The declaration of Swift.AutoreleasingUnsafeMutablePointer<T>.
   NominalTypeDecl *AutoreleasingUnsafeMutablePointerDecl = nullptr;
   VarDecl *AutoreleasingUnsafeMutablePointerMemoryDecl = nullptr;
@@ -147,25 +163,22 @@ struct ASTContext::Implementation {
   /// The declaration of Swift.Unmanaged<T>
   NominalTypeDecl *UnmanagedDecl = nullptr;
 
+  /// The declaration of Swift.Never.
+  NominalTypeDecl *NeverDecl = nullptr;
+
   /// The declaration of Swift.Void.
   TypeAliasDecl *VoidDecl = nullptr;
 
-  /// The declaration of Swift.Any.
-  TypeAliasDecl *AnyDecl = nullptr;
-
   /// The declaration of ObjectiveC.ObjCBool.
   StructDecl *ObjCBoolDecl = nullptr;
+
+  /// The declaration of Foundation.NSError.
+  ClassDecl *NSErrorDecl = nullptr;
 
   // Declare cached declarations for each of the known declarations.
 #define FUNC_DECL(Name, Id) FuncDecl *Get##Name = nullptr;
 #include "swift/AST/KnownDecls.def"
   
-  /// func _stdlib_Optional_isSome<T>(v: Optional<T>) -> Bool
-  FuncDecl *OptionalIsSomeSomeDecls[NumOptionalTypeKinds] = {};
-
-  /// func _stdlib_Optional_unwrapped<T>(v: Optional<T>) -> T
-  FuncDecl *OptionalUnwrappedDecls[NumOptionalTypeKinds] = {};
-
   /// The declaration of Swift.ImplicitlyUnwrappedOptional<T>.
   EnumDecl *ImplicitlyUnwrappedOptionalDecl = nullptr;
 
@@ -175,7 +188,7 @@ struct ASTContext::Implementation {
   /// func ==(Int, Int) -> Bool
   FuncDecl *EqualIntDecl = nullptr;
 
-  /// func _unimplemented_initializer(className: StaticString).
+  /// func _unimplementedInitializer(className: StaticString).
   FuncDecl *UnimplementedInitializerDecl = nullptr;
 
   /// func _undefined<T>(msg: StaticString, file: StaticString, line: UInt) -> T
@@ -274,8 +287,9 @@ struct ASTContext::Implementation {
     llvm::FoldingSet<ClassType> ClassTypes;
     llvm::FoldingSet<UnboundGenericType> UnboundGenericTypes;
     llvm::FoldingSet<BoundGenericType> BoundGenericTypes;
+    llvm::FoldingSet<ProtocolType> ProtocolTypes;
 
-    llvm::DenseMap<std::pair<BoundGenericType *, DeclContext *>,
+    llvm::DenseMap<std::pair<TypeBase *, DeclContext *>,
                    ArrayRef<Substitution>>
       BoundGenericSubstitutions;
 
@@ -329,65 +343,9 @@ struct ASTContext::Implementation {
   /// checking unintended Objective-C overrides.
   std::vector<AbstractFunctionDecl *> ObjCMethods;
 
-  /// An entry in the foreign-representable cache.
-  class ForeignRepresentableCacheEntry {
-    /// The low three bits store a ForeignRepresentableKind.
-    ///
-    /// When the ForeignRepresentableKind == None, the upper bits are
-    /// the generation count at which this negative result was last
-    /// checked. Otherwise, masking off the lower bits produces a
-    /// ProtocolConformance* that describes the conformance.
-    uintptr_t Storage;
-
-  public:
-    /// Retrieve a cache entry for a non-foreign-representable type.
-    static ForeignRepresentableCacheEntry forNone(unsigned generation) {
-      ForeignRepresentableCacheEntry result;
-      result.Storage = static_cast<uintptr_t>(generation) << 3;
-      result.Storage |= static_cast<uintptr_t>(ForeignRepresentableKind::None);
-      return result;
-    }
-
-    // Retrieve a cache entry for a trivially representable type.
-    static ForeignRepresentableCacheEntry forTrivial() {
-      ForeignRepresentableCacheEntry result;
-      result.Storage = reinterpret_cast<uintptr_t>(nullptr);
-      result.Storage |=
-          static_cast<uintptr_t>(ForeignRepresentableKind::Trivial);
-      return result;
-    }
-
-    // Retrieve a cache entry for a bridged representable type.
-    static ForeignRepresentableCacheEntry
-    forBridged(ProtocolConformance *conformance) {
-      ForeignRepresentableCacheEntry result;
-      result.Storage = reinterpret_cast<uintptr_t>(conformance);
-      result.Storage
-        |= static_cast<uintptr_t>(ForeignRepresentableKind::Bridged);
-      return result;
-    }
-
-    /// Retrieve the foreign representable kind.
-    ForeignRepresentableKind getKind() const {
-      return static_cast<ForeignRepresentableKind>(Storage & 0x07);
-    }
-
-    /// Retrieve the generation for a non-representable type.
-    unsigned getGeneration() const {
-      assert(getKind() == ForeignRepresentableKind::None);
-      return static_cast<unsigned>(Storage >> 3);
-    }
-
-    /// Retrieve the protocol conformance that makes it representable.
-    ProtocolConformance *getConformance() const {
-      assert(getKind() != ForeignRepresentableKind::None);
-      return reinterpret_cast<ProtocolConformance *>(Storage & ~0x07);
-    }
-  };
-
   /// A cache of information about whether particular nominal types
   /// are representable in a foreign language.
-  llvm::DenseMap<NominalTypeDecl *, ForeignRepresentableCacheEntry>
+  llvm::DenseMap<NominalTypeDecl *, ForeignRepresentationInfo>
     ForeignRepresentableCache;
 
   llvm::StringMap<OptionSet<SearchPathKind>> SearchPathsSet;
@@ -473,6 +431,7 @@ ASTContext::ASTContext(LangOptions &langOpts, SearchPathOptions &SearchPathOpts,
     TheUnresolvedType(new (*this, AllocationArena::Permanent)
                       UnresolvedType(*this)),
     TheEmptyTupleType(TupleType::get(ArrayRef<TupleTypeElt>(), *this)),
+    TheAnyType(ProtocolCompositionType::get(*this, ArrayRef<Type>())),
     TheNativeObjectType(new (*this, AllocationArena::Permanent)
                            BuiltinNativeObjectType(*this)),
     TheBridgeObjectType(new (*this, AllocationArena::Permanent)
@@ -620,7 +579,7 @@ NominalTypeDecl *ASTContext::getStringDecl() const {
 }
 
 CanType ASTContext::getExceptionType() const {
-  if (auto exn = getErrorProtocolDecl()) {
+  if (auto exn = getErrorDecl()) {
     return exn->getDeclaredType()->getCanonicalType();
   } else {
     // Use Builtin.NativeObject just as a stand-in.
@@ -628,8 +587,8 @@ CanType ASTContext::getExceptionType() const {
   }
 }
 
-NominalTypeDecl *ASTContext::getErrorProtocolDecl() const {
-  return getProtocol(KnownProtocolKind::ErrorProtocol);
+NominalTypeDecl *ASTContext::getErrorDecl() const {
+  return getProtocol(KnownProtocolKind::Error);
 }
 
 NominalTypeDecl *ASTContext::getArrayDecl() const {
@@ -748,12 +707,36 @@ NominalTypeDecl *ASTContext::getOptionSetDecl() const {
   return Impl.OptionSetDecl;
 }
 
+NominalTypeDecl *ASTContext::getUnsafeMutableRawPointerDecl() const {
+  if (!Impl.UnsafeMutableRawPointerDecl)
+    Impl.UnsafeMutableRawPointerDecl = findStdlibType(
+      *this, "UnsafeMutableRawPointer", 0);
+  
+  return Impl.UnsafeMutableRawPointerDecl;
+}
+
+NominalTypeDecl *ASTContext::getUnsafeRawPointerDecl() const {
+  if (!Impl.UnsafeRawPointerDecl)
+    Impl.UnsafeRawPointerDecl = findStdlibType(
+      *this, "UnsafeRawPointer", 0);
+
+  return Impl.UnsafeRawPointerDecl;
+}
+
 NominalTypeDecl *ASTContext::getUnsafeMutablePointerDecl() const {
   if (!Impl.UnsafeMutablePointerDecl)
     Impl.UnsafeMutablePointerDecl = findStdlibType(
       *this, "UnsafeMutablePointer", 1);
-  
+
   return Impl.UnsafeMutablePointerDecl;
+}
+
+NominalTypeDecl *ASTContext::getOpaquePointerDecl() const {
+  if (!Impl.OpaquePointerDecl)
+    Impl.OpaquePointerDecl
+      = findStdlibType(*this, "OpaquePointer", 0);
+  
+  return Impl.OpaquePointerDecl;
 }
 
 NominalTypeDecl *ASTContext::getUnsafePointerDecl() const {
@@ -809,6 +792,14 @@ static VarDecl *getPointeeProperty(VarDecl *&cache,
 VarDecl *
 ASTContext::getPointerPointeePropertyDecl(PointerTypeKind ptrKind) const {
   switch (ptrKind) {
+  case PTK_UnsafeMutableRawPointer:
+    return getPointeeProperty(Impl.UnsafeMutableRawPointerMemoryDecl,
+                             &ASTContext::getUnsafeMutableRawPointerDecl,
+                             *this);
+  case PTK_UnsafeRawPointer:
+    return getPointeeProperty(Impl.UnsafeRawPointerMemoryDecl,
+                             &ASTContext::getUnsafeRawPointerDecl,
+                             *this);
   case PTK_UnsafeMutablePointer:
     return getPointeeProperty(Impl.UnsafeMutablePointerMemoryDecl,
                              &ASTContext::getUnsafeMutablePointerDecl,
@@ -823,6 +814,17 @@ ASTContext::getPointerPointeePropertyDecl(PointerTypeKind ptrKind) const {
                              *this);
   }
   llvm_unreachable("bad pointer kind");
+}
+
+NominalTypeDecl *ASTContext::getNeverDecl() const {
+  if (!Impl.NeverDecl)
+    Impl.NeverDecl = findStdlibType(*this, "Never", 0);
+  
+  return Impl.NeverDecl;
+}
+
+CanType ASTContext::getNeverType() const {
+  return getNeverDecl()->getDeclaredType()->getCanonicalType();
 }
 
 TypeAliasDecl *ASTContext::getVoidDecl() const {
@@ -843,30 +845,11 @@ TypeAliasDecl *ASTContext::getVoidDecl() const {
   return Impl.VoidDecl;
 }
 
-
-TypeAliasDecl *ASTContext::getAnyDecl() const {
-  if (Impl.AnyDecl) {
-    return Impl.AnyDecl;
-  }
-
-  // Go find 'Any' in the Swift module.
-  SmallVector<ValueDecl *, 1> results;
-  lookupInSwiftModule("Any", results);
-  for (auto result : results) {
-    if (auto typeAlias = dyn_cast<TypeAliasDecl>(result)) {
-      Impl.AnyDecl = typeAlias;
-      break;
-    }
-  }
-
-  return Impl.AnyDecl;
-}
-
-
-StructDecl *ASTContext::getObjCBoolDecl() {
+StructDecl *ASTContext::getObjCBoolDecl() const {
   if (!Impl.ObjCBoolDecl) {
     SmallVector<ValueDecl *, 1> results;
-    if (Module *M = getModuleByName(Id_ObjectiveC.str())) {
+    auto *Context = const_cast<ASTContext *>(this);
+    if (Module *M = Context->getModuleByName(Id_ObjectiveC.str())) {
       M->lookupValue({ }, getIdentifier("ObjCBool"), NLKind::UnqualifiedLookup,
                      results);
       for (auto result : results) {
@@ -883,6 +866,26 @@ StructDecl *ASTContext::getObjCBoolDecl() {
   return Impl.ObjCBoolDecl;
 }
 
+ClassDecl *ASTContext::getNSErrorDecl() const {
+  if (!Impl.NSErrorDecl) {
+    if (Module *M = getLoadedModule(Id_Foundation)) {
+      // Note: use unqualified lookup so we find NSError regardless of
+      // whether it's defined in the Foundation module or the Clang
+      // Foundation module it imports.
+      UnqualifiedLookup lookup(getIdentifier("NSError"), M, nullptr);
+      if (auto type = lookup.getSingleTypeResult()) {
+        if (auto classDecl = dyn_cast<ClassDecl>(type)) {
+          if (classDecl->getGenericParams() == nullptr) {
+            Impl.NSErrorDecl = classDecl;
+          }
+        }
+      }
+    }
+  }
+
+  return Impl.NSErrorDecl;
+}
+
 ProtocolDecl *ASTContext::getProtocol(KnownProtocolKind kind) const {
   // Check whether we've already looked for and cached this protocol.
   unsigned index = (unsigned)kind;
@@ -893,8 +896,11 @@ ProtocolDecl *ASTContext::getProtocol(KnownProtocolKind kind) const {
   // Find all of the declarations with this name in the appropriate module.
   SmallVector<ValueDecl *, 1> results;
 
-  // _BridgedNSError is in the Foundation module.
-  if (kind == KnownProtocolKind::BridgedNSError) {
+  // _BridgedNSError, _BridgedStoredNSError, and _ErrorCodeProtocol
+  // are in the Foundation module.
+  if (kind == KnownProtocolKind::BridgedNSError ||
+      kind == KnownProtocolKind::BridgedStoredNSError ||
+      kind == KnownProtocolKind::ErrorCodeProtocol) {
     Module *foundation =
         const_cast<ASTContext *>(this)->getLoadedModule(Id_Foundation);
     if (!foundation)
@@ -947,7 +953,8 @@ static CanType stripImmediateLabels(CanType type) {
 /// Check whether the given function is non-generic.
 static bool isNonGenericIntrinsic(FuncDecl *fn, CanType &input,
                                   CanType &output) {
-  auto fnType = dyn_cast<FunctionType>(fn->getType()->getCanonicalType());
+  auto fnType = dyn_cast<FunctionType>(fn->getInterfaceType()
+                                         ->getCanonicalType());
   if (!fnType)
     return false;
 
@@ -1008,7 +1015,7 @@ FuncDecl *ASTContext::getEqualIntDecl(LazyResolver *resolver) const {
   for (ValueDecl *vd : equalFuncs) {
     // All "==" decls should be functions, but who knows...
     FuncDecl *funcDecl = dyn_cast<FuncDecl>(vd);
-    if (!funcDecl)
+    if (!funcDecl || funcDecl->getDeclContext()->isTypeContext())
       continue;
     
     if (resolver)
@@ -1041,7 +1048,7 @@ ASTContext::getUnimplementedInitializerDecl(LazyResolver *resolver) const {
 
   // Look for the function.
   CanType input, output;
-  auto decl = findLibraryIntrinsic(*this, "_unimplemented_initializer",
+  auto decl = findLibraryIntrinsic(*this, "_unimplementedInitializer",
                                    resolver);
   if (!decl || !isNonGenericIntrinsic(decl, input, output))
     return nullptr;
@@ -1098,29 +1105,6 @@ FuncDecl *ASTContext::getIsOSVersionAtLeastDecl(LazyResolver *resolver) const {
   return decl;
 }
 
-/// Check whether the given function is generic over a single,
-/// unconstrained archetype.
-static bool isGenericIntrinsic(FuncDecl *fn, CanType &input, CanType &output,
-                               CanType &param) {
-  auto fnType =
-    dyn_cast<GenericFunctionType>(fn->getInterfaceType()->getCanonicalType());
-  if (!fnType || fnType->getGenericParams().size() != 1)
-    return false;
-
-  bool hasRequirements = std::any_of(fnType->getRequirements().begin(),
-                                     fnType->getRequirements().end(),
-                                     [](const Requirement &req) -> bool {
-    return req.getKind() != RequirementKind::WitnessMarker;
-  });
-  if (hasRequirements)
-    return false;
-
-  param = CanGenericTypeParamType(fnType->getGenericParams().front());
-  input = stripImmediateLabels(fnType.getInput());
-  output = stripImmediateLabels(fnType.getResult());
-  return true;
-}
-
 // Find library intrinsic function.
 static FuncDecl *findLibraryFunction(const ASTContext &ctx, FuncDecl *&cache, 
                                      StringRef name, LazyResolver *resolver) {
@@ -1137,101 +1121,17 @@ FuncDecl *ASTContext::get##Name(LazyResolver *resolver) const {     \
 }
 #include "swift/AST/KnownDecls.def"
 
-/// Check whether the given type is Optional applied to the given
-/// type argument.
-static bool isOptionalType(const ASTContext &ctx,
-                           OptionalTypeKind optionalKind,
-                           CanType type, CanType arg) {
-  if (auto boundType = dyn_cast<BoundGenericType>(type)) {
-    return (boundType->getDecl()->classifyAsOptionalType() == optionalKind &&
-            boundType.getGenericArgs().size() == 1 &&
-            boundType.getGenericArgs()[0] == arg);
-  }
-  return false;
-}
-
-/// Turn an OptionalTypeKind into an index into one of the caches.
-static unsigned asIndex(OptionalTypeKind optionalKind) {
-  assert(optionalKind && "passed a non-optional type kind?");
-  return unsigned(optionalKind) - 1;
-}
-
-#define getOptionalIntrinsicName(PREFIX, KIND, SUFFIX) \
-  ((KIND) == OTK_Optional                              \
-    ? (PREFIX "Optional" SUFFIX)                       \
-    : (PREFIX "ImplicitlyUnwrappedOptional" SUFFIX))
-
-FuncDecl *ASTContext::getOptionalIsSomeDecl(
-    LazyResolver *resolver, OptionalTypeKind optionalKind) const {
-  auto &cache = Impl.OptionalIsSomeSomeDecls[asIndex(optionalKind)];
-  if (cache)
-    return cache;
-
-  auto name =
-      getOptionalIntrinsicName("_stdlib_", optionalKind, "_isSome");
-
-  // Look for a generic function.
-  CanType input, output, param;
-  auto decl = findLibraryIntrinsic(*this, name, resolver);
-  if (!decl || !isGenericIntrinsic(decl, input, output, param))
-    return nullptr;
-
-  // Input must be Optional<T>.
-  if (!isOptionalType(*this, optionalKind, input, param))
-    return nullptr;
-
-  // Output must be a global type named Bool.
-  auto nominalType = dyn_cast<NominalType>(output);
-  if (!nominalType || nominalType.getParent() ||
-      nominalType->getDecl()->getName().str() != "Bool")
-    return nullptr;
-
-  cache = decl;
-  return decl;
-}
-
-FuncDecl *ASTContext::getOptionalUnwrappedDecl(LazyResolver *resolver,
-                                         OptionalTypeKind optionalKind) const {
-  auto &cache = Impl.OptionalUnwrappedDecls[asIndex(optionalKind)];
-  if (cache) return cache;
-
-  auto name = getOptionalIntrinsicName(
-      "_stdlib_", optionalKind, "_unwrapped");
-
-  // Look for the function.
-  CanType input, output, param;
-  auto decl = findLibraryIntrinsic(*this, name, resolver);
-  if (!decl || !isGenericIntrinsic(decl, input, output, param))
-    return nullptr;
-
-  // Input must be Optional<T>.
-  if (!isOptionalType(*this, optionalKind, input, param))
-    return nullptr;
-
-  // Output must be T.
-  if (output != param)
-    return nullptr;
-
-  cache = decl;
-  return decl;
-}
-
-static bool hasOptionalIntrinsics(const ASTContext &ctx, LazyResolver *resolver,
-                                  OptionalTypeKind optionalKind) {
-  return ctx.getOptionalIsSomeDecl(resolver, optionalKind) &&
-    ctx.getOptionalUnwrappedDecl(resolver, optionalKind);
-}
-
 bool ASTContext::hasOptionalIntrinsics(LazyResolver *resolver) const {
   return getOptionalDecl() &&
          getOptionalSomeDecl() &&
          getOptionalNoneDecl() &&
-         ::hasOptionalIntrinsics(*this, resolver, OTK_Optional) &&
-         ::hasOptionalIntrinsics(*this, resolver, OTK_ImplicitlyUnwrappedOptional);
+         getDiagnoseUnexpectedNilOptional(resolver);
 }
 
 bool ASTContext::hasPointerArgumentIntrinsics(LazyResolver *resolver) const {
-  return getUnsafeMutablePointerDecl()
+  return getUnsafeMutableRawPointerDecl()
+    && getUnsafeRawPointerDecl()
+    && getUnsafeMutablePointerDecl()
     && getUnsafePointerDecl()
     && (!LangOpts.EnableObjCInterop || getAutoreleasingUnsafeMutablePointerDecl())
     && getConvertPointerToPointerArgument(resolver)
@@ -1285,35 +1185,36 @@ ASTContext::createTrivialSubstitutions(BoundGenericType *BGT,
 }
 
 Optional<ArrayRef<Substitution>>
-ASTContext::getSubstitutions(BoundGenericType* bound,
+ASTContext::getSubstitutions(TypeBase *type,
                              DeclContext *gpContext) const {
   assert(gpContext && "Missing generic parameter context");
-  auto arena = getArena(bound->getRecursiveProperties());
-  assert(bound->isCanonical() && "Requesting non-canonical substitutions");
+  auto arena = getArena(type->getRecursiveProperties());
+  assert(type->isCanonical() && "Requesting non-canonical substitutions");
   auto &boundGenericSubstitutions
     = Impl.getArena(arena).BoundGenericSubstitutions;
-  auto known = boundGenericSubstitutions.find({bound, gpContext});
+  auto known = boundGenericSubstitutions.find({type, gpContext});
   if (known != boundGenericSubstitutions.end())
     return known->second;
 
   // We can trivially create substitutions for Array and Optional.
-  if (bound->getDecl() == getArrayDecl() ||
-      bound->getDecl() == getOptionalDecl())
-    return createTrivialSubstitutions(bound, gpContext);
+  if (auto bound = dyn_cast<BoundGenericType>(type))
+    if (bound->getDecl() == getArrayDecl() ||
+        bound->getDecl() == getOptionalDecl())
+      return createTrivialSubstitutions(bound, gpContext);
 
   return None;
 }
 
-void ASTContext::setSubstitutions(BoundGenericType* Bound,
+void ASTContext::setSubstitutions(TypeBase* type,
                                   DeclContext *gpContext,
                                   ArrayRef<Substitution> Subs) const {
-  auto arena = getArena(Bound->getRecursiveProperties());
+  auto arena = getArena(type->getRecursiveProperties());
   auto &boundGenericSubstitutions
     = Impl.getArena(arena).BoundGenericSubstitutions;
-  assert(Bound->isCanonical() && "Requesting non-canonical substitutions");
-  assert(boundGenericSubstitutions.count({Bound, gpContext}) == 0 &&
+  assert(type->isCanonical() && "Requesting non-canonical substitutions");
+  assert(boundGenericSubstitutions.count({type, gpContext}) == 0 &&
          "Already have substitutions?");
-  boundGenericSubstitutions[{Bound, gpContext}] = Subs;
+  boundGenericSubstitutions[{type, gpContext}] = Subs;
 }
 
 Type ASTContext::getTypeVariableMemberType(TypeVariableType *baseTypeVar,
@@ -1374,13 +1275,7 @@ void ASTContext::verifyAllLoadedModules() const {
 
   for (auto &topLevelModulePair : LoadedModules) {
     Module *M = topLevelModulePair.second;
-    bool hasAnyFileUnits = std::any_of(M->getFiles().begin(),
-                                       M->getFiles().end(),
-                                       [](const FileUnit *file) {
-      return !isa<DerivedFileUnit>(file);
-    });
-    if (!hasAnyFileUnits)
-      assert(M->failedToLoad());
+    assert(!M->getFiles().empty() || M->failedToLoad());
   }
 #endif
 }
@@ -1869,6 +1764,148 @@ std::pair<unsigned, DeclName> swift::getObjCMethodDiagInfo(
   }
 }
 
+bool swift::fixDeclarationName(InFlightDiagnostic &diag, ValueDecl *decl,
+                               DeclName targetName) {
+  if (decl->isImplicit()) return false;
+  if (decl->getFullName() == targetName) return false;
+
+  // Handle properties directly.
+  if (auto var = dyn_cast<VarDecl>(decl)) {
+    // Replace the name.
+    SmallString<64> scratch;
+    diag.fixItReplace(var->getNameLoc(), targetName.getString(scratch));
+    return false;
+  }
+
+  // We only handle functions from here on.
+  auto func = dyn_cast<AbstractFunctionDecl>(decl);
+  if (!func) return true;
+
+  auto name = func->getFullName();
+
+  // Fix the name of the function itself.
+  if (name.getBaseName() != targetName.getBaseName()) {
+    diag.fixItReplace(func->getLoc(), targetName.getBaseName().str());
+  }
+
+  // Fix the argument names that need fixing.
+  assert(name.getArgumentNames().size()
+          == targetName.getArgumentNames().size());
+  auto params = func->getParameterList(func->getDeclContext()->isTypeContext());
+  for (unsigned i = 0, n = name.getArgumentNames().size(); i != n; ++i) {
+    auto origArg = name.getArgumentNames()[i];
+    auto targetArg = targetName.getArgumentNames()[i];
+
+    if (origArg == targetArg)
+      continue;
+
+    auto *param = params->get(i);
+
+    // The parameter has an explicitly-specified API name, and it's wrong.
+    if (param->getArgumentNameLoc() != param->getLoc() &&
+        param->getArgumentNameLoc().isValid()) {
+      // ... but the internal parameter name was right. Just zap the
+      // incorrect explicit specialization.
+      if (param->getName() == targetArg) {
+        diag.fixItRemoveChars(param->getArgumentNameLoc(),
+                              param->getLoc());
+        continue;
+      }
+
+      // Fix the API name.
+      StringRef targetArgStr = targetArg.empty()? "_" : targetArg.str();
+      diag.fixItReplace(param->getArgumentNameLoc(), targetArgStr);
+      continue;
+    }
+
+    // The parameter did not specify a separate API name. Insert one.
+    if (targetArg.empty())
+      diag.fixItInsert(param->getLoc(), "_ ");
+    else {
+      llvm::SmallString<8> targetArgStr;
+      targetArgStr += targetArg.str();
+      targetArgStr += ' ';
+      diag.fixItInsert(param->getLoc(), targetArgStr);
+    }
+  }
+
+  return false;
+}
+
+bool swift::fixDeclarationObjCName(InFlightDiagnostic &diag, ValueDecl *decl,
+                                   Optional<ObjCSelector> targetNameOpt,
+                                   bool ignoreImpliedName) {
+  // Subscripts cannot be renamed, so handle them directly.
+  if (isa<SubscriptDecl>(decl)) {
+    diag.fixItInsert(decl->getAttributeInsertionLoc(/*forModifier=*/false),
+                     "@objc ");
+    return false;
+  }
+
+  // Determine the Objective-C name of the declaration.
+  ObjCSelector name = *decl->getObjCRuntimeName();
+  auto targetName = *targetNameOpt;
+
+  // Dig out the existing '@objc' attribute on the witness. We don't care
+  // about implicit ones because they don't have useful source location
+  // information.
+  auto attr = decl->getAttrs().getAttribute<ObjCAttr>();
+  if (attr && attr->isImplicit())
+    attr = nullptr;
+
+  // If there is an @objc attribute with an explicit, incorrect witness
+  // name, go fix the witness name.
+  if (attr && name != targetName &&
+      attr->hasName() && !attr->isNameImplicit()) {
+    // Find the source range covering the full name.
+    SourceLoc startLoc;
+    if (attr->getNameLocs().empty())
+      startLoc = attr->getRParenLoc();
+    else
+      startLoc = attr->getNameLocs().front();
+
+    // Replace the name with the name of the requirement.
+    SmallString<64> scratch;
+    diag.fixItReplaceChars(startLoc, attr->getRParenLoc(),
+                           targetName.getString(scratch));
+    return false;
+  }
+
+  // We need to create or amend an @objc attribute with the appropriate name.
+
+  // Form the Fix-It text.
+  SourceLoc startLoc;
+  SmallString<64> fixItText;
+  {
+    assert((!attr || !attr->hasName() || attr->isNameImplicit() ||
+            name == targetName) && "Nothing to diagnose!");
+    llvm::raw_svector_ostream out(fixItText);
+
+    // If there is no @objc attribute, we need to add our own '@objc'.
+    if (!attr) {
+      startLoc = decl->getAttributeInsertionLoc(/*forModifier=*/false);
+      out << "@objc";
+    } else {
+      startLoc = Lexer::getLocForEndOfToken(decl->getASTContext().SourceMgr,
+                                            attr->getRange().End);
+    }
+
+    // If the names of the witness and requirement differ, we need to
+    // specify the name.
+    if (name != targetName || ignoreImpliedName) {
+      out << "(";
+      out << targetName;
+      out << ")";
+    }
+
+    if (!attr)
+      out << " ";
+  }
+
+  diag.fixItInsert(startLoc, fixItText);
+  return false;
+}
+
 void ASTContext::diagnoseAttrsRequiringFoundation(SourceFile &SF) {
   bool ImportsFoundationModule = false;
 
@@ -1965,7 +2002,7 @@ static AbstractFunctionDecl *lookupObjCMethodInType(
 
 void AbstractFunctionDecl::setForeignErrorConvention(
                                          const ForeignErrorConvention &conv) {
-  assert(isBodyThrowing() && "setting error convention on non-throwing decl");
+  assert(hasThrows() && "setting error convention on non-throwing decl");
   auto &conventionsMap = getASTContext().Impl.ForeignErrorConventions;
   assert(!conventionsMap.count(this) && "error convention already set");
   conventionsMap.insert({this, conv});
@@ -1975,7 +2012,7 @@ Optional<ForeignErrorConvention>
 AbstractFunctionDecl::getForeignErrorConvention() const {
   if (!isObjC() && !getAttrs().hasAttribute<CDeclAttr>())
     return None;
-  if (!isBodyThrowing())
+  if (!hasThrows())
     return None;
   auto &conventionsMap = getASTContext().Impl.ForeignErrorConventions;
   auto it = conventionsMap.find(this);
@@ -2140,7 +2177,7 @@ static void removeValidObjCConflictingMethods(
   methods = methods.slice(0, newEnd - methods.begin());
 }
 
-/// Determine whether the should associate a conflict among the given
+/// Determine whether we should associate a conflict among the given
 /// set of methods with the specified source file.
 static bool shouldAssociateConflictWithSourceFile(
               SourceFile &sf, 
@@ -2343,6 +2380,55 @@ bool ASTContext::diagnoseObjCUnsatisfiedOptReqConflicts(SourceFile &sf) {
                    reqDiagInfo.second,
                    selector,
                    protocolName);
+
+    /// Local function to determine if the given declaration is an accessor.
+    auto isAccessor = [](ValueDecl *decl) -> bool {
+      if (auto func = dyn_cast<FuncDecl>(decl))
+        return func->isAccessor();
+
+      return false;
+    };
+
+    // Fix the name of the witness, if we can.
+    if (req->getFullName() != conflicts[0]->getFullName() &&
+        req->getKind() == conflicts[0]->getKind() &&
+        isAccessor(req) == isAccessor(conflicts[0])) {
+      // They're of the same kind: fix the name.
+      unsigned kind;
+      if (isa<ConstructorDecl>(req))
+        kind = 1;
+      else if (auto func = dyn_cast<FuncDecl>(req)) {
+        if (func->isAccessor())
+          kind = isa<SubscriptDecl>(func->getAccessorStorageDecl()) ? 3 : 2;
+        else
+          kind = 0;
+      } else {
+        llvm_unreachable("unhandled @objc declaration kind");
+      }
+
+      auto diag = Diags.diagnose(conflicts[0],
+                                 diag::objc_optional_requirement_swift_rename,
+                                 kind, req->getFullName());
+
+      // Fix the Swift name.
+      fixDeclarationName(diag, conflicts[0], req->getFullName());
+
+      // Fix the '@objc' attribute, if needed.
+      if (!conflicts[0]->canInferObjCFromRequirement(req))
+        fixDeclarationObjCName(diag, conflicts[0], req->getObjCRuntimeName(),
+                               /*ignoreImpliedName=*/true);
+    }
+
+    // @nonobjc will silence this warning.
+    bool hasExplicitObjCAttribute = false;
+    if (auto objcAttr = conflicts[0]->getAttrs().getAttribute<ObjCAttr>())
+      hasExplicitObjCAttribute = !objcAttr->isImplicit();
+    if (!hasExplicitObjCAttribute)
+      Diags.diagnose(conflicts[0], diag::optional_req_near_match_nonobjc, true)
+        .fixItInsert(
+          conflicts[0]->getAttributeInsertionLoc(/*forModifier=*/false),
+          "@nonobjc ");
+
     Diags.diagnose(getDeclContextLoc(unsatisfied.first),
                    diag::protocol_conformance_here,
                    true,
@@ -2376,17 +2462,17 @@ bool swift::nameConflictsWithStandardLibrary(KnownFoundationEntity entity) {
   case KnownFoundationEntity::NSRange:
   case KnownFoundationEntity::NSSet:
   case KnownFoundationEntity::NSString:
-    return true;
-
   case KnownFoundationEntity::NSCopying:
   case KnownFoundationEntity::NSError:
   case KnownFoundationEntity::NSErrorPointer:
   case KnownFoundationEntity::NSNumber:
   case KnownFoundationEntity::NSObject:
-  case KnownFoundationEntity::NSStringEncoding:
   case KnownFoundationEntity::NSUInteger:
   case KnownFoundationEntity::NSURL:
   case KnownFoundationEntity::NSZone:
+    return true;
+
+  case KnownFoundationEntity::NSStringEncoding:
     return false;
   }
 }
@@ -2478,22 +2564,18 @@ void TupleType::Profile(llvm::FoldingSetNodeID &ID,
   for (const TupleTypeElt &Elt : Fields) {
     ID.AddPointer(Elt.NameAndVariadic.getOpaqueValue());
     ID.AddPointer(Elt.getType().getPointer());
-    ID.AddInteger(static_cast<unsigned>(Elt.getDefaultArgKind()));
   }
 }
 
 /// getTupleType - Return the uniqued tuple type with the specified elements.
 Type TupleType::get(ArrayRef<TupleTypeElt> Fields, const ASTContext &C) {
-  if (Fields.size() == 1 && !Fields[0].isVararg() && !Fields[0].hasName()
-      && Fields[0].getDefaultArgKind() == DefaultArgumentKind::None)
+  if (Fields.size() == 1 && !Fields[0].isVararg() && !Fields[0].hasName())
     return ParenType::get(C, Fields[0].getType());
 
   RecursiveTypeProperties properties;
   for (const TupleTypeElt &Elt : Fields) {
     if (Elt.getType())
       properties |= Elt.getType()->getRecursiveProperties();
-    if (Elt.getDefaultArgKind() != DefaultArgumentKind::None)
-      properties |= RecursiveTypeProperties::HasDefaultParameter;
   }
 
   auto arena = getArena(properties);
@@ -2617,8 +2699,8 @@ BoundGenericType *BoundGenericType::get(NominalTypeDecl *TheDecl,
   } else {
     auto theEnum = cast<EnumDecl>(TheDecl);
     newType = new (C, arena) BoundGenericEnumType(theEnum, Parent, ArgsCopy,
-                                                   IsCanonical ? &C : 0,
-                                                   properties);
+                                                  IsCanonical ? &C : 0,
+                                                  properties);
   }
   C.Impl.getArena(arena).BoundGenericTypes.InsertNode(newType, InsertPos);
 
@@ -3010,14 +3092,23 @@ GenericFunctionType::get(GenericSignature *sig,
   // Do we already have this generic function type?
   void *insertPos;
   if (auto result
-        = ctx.Impl.GenericFunctionTypes.FindNodeOrInsertPos(id, insertPos))
+        = ctx.Impl.GenericFunctionTypes.FindNodeOrInsertPos(id, insertPos)) {
     return result;
+  }
 
   // We have to construct this generic function type. Determine whether
-  // it's canonical.
+  // it's canonical.  Unfortunately, isCanonicalTypeInContext can cause
+  // new GenericFunctionTypes to be created and thus invalidate our insertion
+  // point.
+  auto &moduleForCanonicality = *ctx.TheBuiltinModule;
   bool isCanonical = sig->isCanonical()
-    && input->isCanonical()
-    && output->isCanonical();
+    && sig->isCanonicalTypeInContext(input, moduleForCanonicality)
+    && sig->isCanonicalTypeInContext(output, moduleForCanonicality);
+
+  if (auto result
+        = ctx.Impl.GenericFunctionTypes.FindNodeOrInsertPos(id, insertPos)) {
+    return result;
+  }
 
   // Allocate storage for the object.
   void *mem = ctx.Allocate(sizeof(GenericFunctionType),
@@ -3027,6 +3118,7 @@ GenericFunctionType::get(GenericSignature *sig,
   auto result = new (mem) GenericFunctionType(sig, input, output, info,
                                               isCanonical ? &ctx : nullptr,
                                               properties);
+
   ctx.Impl.GenericFunctionTypes.InsertNode(result, insertPos);
   return result;
 }
@@ -3136,21 +3228,17 @@ SILFunctionType::SILFunctionType(GenericSignature *genericSig,
 
     for (auto param : getParameters()) {
       (void)param;
-      assert(!param.getType().findIf([](Type t) {
-        return t->is<ArchetypeType>()
-          && !t->castTo<ArchetypeType>()->getSelfProtocol();
-      }) && "interface type of generic type should not contain context archetypes");
+      assert(!param.getType()->hasArchetype()
+             && "interface type of generic type should not contain context archetypes");
     }
     for (auto result : getAllResults()) {
       (void)result;
-      assert(!result.getType().findIf([](Type t) {
-        return t->is<ArchetypeType>();
-      }) && "interface type of generic type should not contain context archetypes");
+      assert(!result.getType()->hasArchetype()
+             && "interface type of generic type should not contain context archetypes");
     }
     if (hasErrorResult()) {
-      assert(!getErrorResult().getType().findIf([](Type t) {
-        return t->is<ArchetypeType>();
-      }) && "interface type of generic type should not contain context archetypes");
+      assert(!getErrorResult().getType()->hasArchetype()
+             && "interface type of generic type should not contain context archetypes");
     }
   }
 
@@ -3323,17 +3411,38 @@ ImplicitlyUnwrappedOptionalType *ImplicitlyUnwrappedOptionalType::get(Type base)
 }
 
 ProtocolType *ProtocolType::get(ProtocolDecl *D, const ASTContext &C) {
-  if (auto declaredTy = D->getDeclaredType())
-    return declaredTy->castTo<ProtocolType>();
+  // Protocol types can never be nested inside other types, but we should
+  // model this anyway to fix some compiler crashes when computing
+  // substitutions on invalid code.
+  Type Parent;
 
-  auto protoTy = new (C, AllocationArena::Permanent) ProtocolType(D, C);
-  D->setDeclaredType(protoTy);
+  llvm::FoldingSetNodeID id;
+  ProtocolType::Profile(id, D, Parent);
+
+  RecursiveTypeProperties properties;
+  if (Parent) properties |= Parent->getRecursiveProperties();
+  auto arena = getArena(properties);
+
+  void *insertPos = 0;
+  if (auto protoTy
+        = C.Impl.getArena(arena).ProtocolTypes.FindNodeOrInsertPos(id, insertPos))
+    return protoTy;
+
+  auto protoTy = new (C, arena) ProtocolType(D, C);
+  C.Impl.getArena(arena).ProtocolTypes.InsertNode(protoTy, insertPos);
+
   return protoTy;
 }
 
 ProtocolType::ProtocolType(ProtocolDecl *TheDecl, const ASTContext &Ctx)
   : NominalType(TypeKind::Protocol, &Ctx, TheDecl, /*Parent=*/Type(),
                 RecursiveTypeProperties()) { }
+
+void ProtocolType::Profile(llvm::FoldingSetNodeID &ID, ProtocolDecl *D,
+                           Type Parent) {
+  ID.AddPointer(D);
+  ID.AddPointer(Parent.getPointer());
+}
 
 LValueType *LValueType::get(Type objectTy) {
   assert(!objectTy->is<ErrorType>() &&
@@ -3623,12 +3732,11 @@ DeclName::DeclName(ASTContext &C, Identifier baseName,
 
 /// Find the implementation of the named type in the given module.
 static NominalTypeDecl *findUnderlyingTypeInModule(ASTContext &ctx, 
-                                                   StringRef name,
+                                                   Identifier name,
                                                    Module *module) {
   // Find all of the declarations with this name in the Swift module.
   SmallVector<ValueDecl *, 1> results;
-  auto identifier = ctx.getIdentifier(name);
-  module->lookupValue({ }, identifier, NLKind::UnqualifiedLookup, results);
+  module->lookupValue({ }, name, NLKind::UnqualifiedLookup, results);
   for (auto result : results) {
     if (auto nominal = dyn_cast<NominalTypeDecl>(result))
       return nominal;
@@ -3644,73 +3752,64 @@ static NominalTypeDecl *findUnderlyingTypeInModule(ASTContext &ctx,
   return nullptr;
 }
 
-std::pair<ForeignRepresentableKind, ProtocolConformance *>
-ASTContext::getForeignRepresentable(NominalTypeDecl *nominal,
-                                    ForeignLanguage language,
-                                    DeclContext *dc) {
-  using CacheEntry = Implementation::ForeignRepresentableCacheEntry;
-
+ForeignRepresentationInfo
+ASTContext::getForeignRepresentationInfo(NominalTypeDecl *nominal,
+                                         ForeignLanguage language,
+                                         const DeclContext *dc) {
   if (Impl.ForeignRepresentableCache.empty()) {
     // Local function to add a type with the given name and module as
     // trivially-representable.
-    auto addTrivial = [&](StringRef name, Module *module) {
+    auto addTrivial = [&](Identifier name, Module *module,
+                          bool allowOptional = false) {
       if (auto type = findUnderlyingTypeInModule(*this, name, module)) {
-        Impl.ForeignRepresentableCache.insert({type, CacheEntry::forTrivial()});
+        auto info = ForeignRepresentationInfo::forTrivial();
+        if (allowOptional)
+          info = ForeignRepresentationInfo::forTrivialWithOptional();
+        Impl.ForeignRepresentableCache.insert({type, info});
       }
     };
 
     // Pre-populate the foreign-representable cache with known types.
     if (auto stdlib = getStdlibModule()) {
-      addTrivial("OpaquePointer", stdlib);
+      addTrivial(getIdentifier("OpaquePointer"), stdlib, true);
 
       // Builtin types
+      // FIXME: Layering violation to use the ClangImporter's define.
 #define MAP_BUILTIN_TYPE(CLANG_BUILTIN_KIND, SWIFT_TYPE_NAME) \
-      addTrivial(#SWIFT_TYPE_NAME, stdlib);
+      addTrivial(getIdentifier(#SWIFT_TYPE_NAME), stdlib);
 #include "swift/ClangImporter/BuiltinMappedTypes.def"
-
-#define BRIDGE_TYPE(BRIDGED_MODULE, BRIDGED_TYPE,                     \
-                    NATIVE_MODULE, NATIVE_TYPE, OPTIONAL_IS_BRIDGED)  \
-      assert(StringRef(#NATIVE_MODULE) == "Swift");                   \
-      addTrivial(#NATIVE_TYPE, stdlib);
-#include "swift/SIL/BridgedTypes.def"
     }
 
-    if (auto darwin = getLoadedModule(getIdentifier("Darwin"))) {
+    if (auto darwin = getLoadedModule(Id_Darwin)) {
       // Note: DarwinBoolean is odd because it's bridged to Bool in APIs,
       // but can also be trivially bridged.
-      addTrivial("DarwinBoolean", darwin);
+      addTrivial(getIdentifier("DarwinBoolean"), darwin);
     }
 
-    if (auto objectiveC = getLoadedModule(getIdentifier("ObjectiveC"))) {
-      addTrivial("Selector", objectiveC);
+    if (auto objectiveC = getLoadedModule(Id_ObjectiveC)) {
+      addTrivial(Id_Selector, objectiveC, true);
 
       // Note: ObjCBool is odd because it's bridged to Bool in APIs,
       // but can also be trivially bridged.
-      addTrivial("ObjCBool", objectiveC);
+      addTrivial(getIdentifier("ObjCBool"), objectiveC);
 
-      addTrivial(getSwiftId(KnownFoundationEntity::NSZone).str(), objectiveC);
+      addTrivial(getSwiftId(KnownFoundationEntity::NSZone), objectiveC, true);
     }
 
     if (auto coreGraphics = getLoadedModule(getIdentifier("CoreGraphics"))) {
-      addTrivial("CGFloat", coreGraphics);
-    }
-
-    if (auto foundation = getLoadedModule(Id_Foundation)) {
-      // FIXME: Why do we care?
-      addTrivial(getSwiftId(KnownFoundationEntity::NSErrorPointer).str(),
-                 foundation);
+      addTrivial(Id_CGFloat, coreGraphics);
     }
 
     // Pull SIMD types of size 2...4 from the SIMD module, if it exists.
     // FIXME: Layering violation to use the ClangImporter's define.
     const unsigned SWIFT_MAX_IMPORTED_SIMD_ELEMENTS = 4;
     if (auto simd = getLoadedModule(Id_simd)) {
-#define MAP_SIMD_TYPE(BASENAME, __)                                     \
+#define MAP_SIMD_TYPE(BASENAME, _, __)                                  \
       {                                                                 \
         char name[] = #BASENAME "0";                                    \
         for (unsigned i = 2; i <= SWIFT_MAX_IMPORTED_SIMD_ELEMENTS; ++i) { \
           *(std::end(name) - 2) = '0' + i;                              \
-          addTrivial(name, simd);                                       \
+          addTrivial(getIdentifier(name), simd);                        \
         }                                                               \
       }
 #include "swift/ClangImporter/SIMDMappedTypes.def"      
@@ -3724,7 +3823,7 @@ ASTContext::getForeignRepresentable(NominalTypeDecl *nominal,
   if (known == Impl.ForeignRepresentableCache.end() ||
       (known->second.getKind() == ForeignRepresentableKind::None &&
        known->second.getGeneration() < CurrentGeneration)) {
-    Optional<CacheEntry> result;
+    Optional<ForeignRepresentationInfo> result;
 
     // Look for a conformance to _ObjectiveCBridgeable.
     //
@@ -3736,13 +3835,18 @@ ASTContext::getForeignRepresentable(NominalTypeDecl *nominal,
             = dc->getParentModule()->lookupConformance(
                 nominal->getDeclaredType(), objcBridgeable,
                 getLazyResolver())) {
-        result = CacheEntry::forBridged(conformance->getConcrete());
+        result =
+            ForeignRepresentationInfo::forBridged(conformance->getConcrete());
       }
     }
 
+    // Error is bridged to NSError, when it's available.
+    if (nominal == getErrorDecl() && getNSErrorDecl())
+      result = ForeignRepresentationInfo::forBridgedError();
+
     // If we didn't find anything, mark the result as "None".
     if (!result)
-      result = CacheEntry::forNone(CurrentGeneration);
+      result = ForeignRepresentationInfo::forNone(CurrentGeneration);
     
     // Cache the result.
     known = Impl.ForeignRepresentableCache.insert({ nominal, *result }).first;
@@ -3751,14 +3855,14 @@ ASTContext::getForeignRepresentable(NominalTypeDecl *nominal,
   // Map a cache entry to a result for this specific 
   auto entry = known->second;
   if (entry.getKind() == ForeignRepresentableKind::None)
-    return { ForeignRepresentableKind::None, nullptr };
+    return entry;
 
   // Extract the protocol conformance.
   auto conformance = entry.getConformance();
 
   // If the conformance is not visible, fail.
   if (conformance && !conformance->isVisibleFrom(dc))
-    return { ForeignRepresentableKind::None, nullptr };
+    return ForeignRepresentationInfo::forNone();
 
   // Language-specific filtering.
   switch (language) {
@@ -3767,12 +3871,16 @@ ASTContext::getForeignRepresentable(NominalTypeDecl *nominal,
     if (conformance &&
         conformance->getProtocol()->isSpecificProtocol(
           KnownProtocolKind::ObjectiveCBridgeable))
-      return { ForeignRepresentableKind::None, nullptr };
+      return ForeignRepresentationInfo::forNone();
 
-    return { entry.getKind(), conformance };
+    // Ignore error bridging in C.
+    if (entry.getKind() == ForeignRepresentableKind::BridgedError)
+      return ForeignRepresentationInfo::forNone();
+
+    SWIFT_FALLTHROUGH;
 
   case ForeignLanguage::ObjectiveC:
-    return { entry.getKind(), conformance };
+    return entry;
   }
 }
 
@@ -3787,15 +3895,20 @@ bool ASTContext::isStandardLibraryTypeBridgedInFoundation(
           nominal == getDictionaryDecl() ||
           nominal == getSetDecl() ||
           nominal == getStringDecl() ||
+          nominal == getErrorDecl() ||
           // Weird one-off case where CGFloat is bridged to NSNumber.
           nominal->getName() == Id_CGFloat);
 }
 
 Optional<Type>
 ASTContext::getBridgedToObjC(const DeclContext *dc, Type type,
-                             LazyResolver *resolver) const {
-  if (type->isBridgeableObjectType())
+                             LazyResolver *resolver,
+                             Type *bridgedValueType) const {
+  if (type->isBridgeableObjectType()) {
+    if (bridgedValueType) *bridgedValueType = type;
+
     return type;
+  }
 
   // Whitelist certain types even if Foundation is not imported, to ensure
   // that casts from AnyObject to one of these types are not optimized away.
@@ -3828,27 +3941,58 @@ ASTContext::getBridgedToObjC(const DeclContext *dc, Type type,
     if (existentialMetaTy->getInstanceType()->isObjCExistentialType())
       return type;
 
-  // Retrieve the _BridgedToObjectiveC protocol.
-  auto bridgedProto = getProtocol(KnownProtocolKind::ObjectiveCBridgeable);
-  if (!bridgedProto)
-    return None;
+  // Check whether the type is an existential that contains
+  // Error. If so, it's bridged to NSError.
+  if (type->isExistentialWithError()) {
+    if (auto nsErrorDecl = getNSErrorDecl()) {
+      // The corresponding value type is Error.
+      if (bridgedValueType)
+        *bridgedValueType = getErrorDecl()->getDeclaredInterfaceType();
 
-  // Check whether the type conforms to _BridgedToObjectiveC.
-  auto conformance
-    = dc->getParentModule()->lookupConformance(type, bridgedProto, resolver);
-  if (!conformance) {
-    // If we haven't imported Foundation but this is a whitelisted type,
-    // behave as above.
-    if (knownBridgedToObjC)
-      return Type();
-    return None;
+      return nsErrorDecl->getDeclaredInterfaceType();
+    }
   }
 
-  // Find the type we bridge to.
-  return ProtocolConformance::getTypeWitnessByName(type,
-                                               conformance->getConcrete(),
-                                               getIdentifier("_ObjectiveCType"),
-                                               resolver);
+  // Try to find a conformance that will enable bridging.
+  auto findConformance =
+    [&](KnownProtocolKind known) -> Optional<ProtocolConformanceRef> {
+      // Find the protocol.
+      auto proto = getProtocol(known);
+      if (!proto) return None;
+
+      return dc->getParentModule()->lookupConformance(type, proto, resolver);
+    };
+
+  // Do we conform to _ObjectiveCBridgeable?
+  if (auto conformance
+        = findConformance(KnownProtocolKind::ObjectiveCBridgeable)) {
+    // The corresponding value type is... the type.
+    if (bridgedValueType)
+      *bridgedValueType = type;
+
+    // Find the Objective-C class type we bridge to.
+    return ProtocolConformance::getTypeWitnessByName(
+             type, conformance->getConcrete(), Id_ObjectiveCType,
+             resolver);
+  }
+
+  // Do we conform to Error?
+  if (findConformance(KnownProtocolKind::Error)) {
+    // The corresponding value type is Error.
+    if (bridgedValueType)
+      *bridgedValueType = getErrorDecl()->getDeclaredInterfaceType();
+
+    // Bridge to NSError.
+    if (auto nsErrorDecl = getNSErrorDecl())
+      return nsErrorDecl->getDeclaredInterfaceType();
+  }
+
+
+  // If we haven't imported Foundation but this is a whitelisted type,
+  // behave as above.
+  if (knownBridgedToObjC)
+    return Type();
+  return None;
 }
 
 std::pair<ArchetypeBuilder *, ArchetypeBuilder::PotentialArchetype *>

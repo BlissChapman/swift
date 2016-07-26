@@ -1,23 +1,16 @@
 // RUN: rm -rf %t
 // RUN: mkdir -p %t
-// RUN: %S/../../utils/gyb %s -o %t/ArrayTraps.swift
-// RUN: %S/../../utils/line-directive %t/ArrayTraps.swift -- %target-build-swift %t/ArrayTraps.swift -o %t/a.out_Debug
-// RUN: %S/../../utils/line-directive %t/ArrayTraps.swift -- %target-build-swift %t/ArrayTraps.swift -o %t/a.out_Release -O
+// RUN: %gyb %s -o %t/ArrayTraps.swift
+// RUN: %line-directive %t/ArrayTraps.swift -- %target-build-swift %t/ArrayTraps.swift -o %t/a.out_Debug
+// RUN: %line-directive %t/ArrayTraps.swift -- %target-build-swift %t/ArrayTraps.swift -o %t/a.out_Release -O
 //
-// RUN: %S/../../utils/line-directive %t/ArrayTraps.swift -- %target-run %t/a.out_Debug
-// RUN: %S/../../utils/line-directive %t/ArrayTraps.swift -- %target-run %t/a.out_Release
+// RUN: %line-directive %t/ArrayTraps.swift -- %target-run %t/a.out_Debug
+// RUN: %line-directive %t/ArrayTraps.swift -- %target-run %t/a.out_Release
 // REQUIRES: executable_test
 // REQUIRES: objc_interop
 
 import StdlibUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-import SwiftPrivate
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 import Foundation
 
@@ -36,7 +29,7 @@ ArrayTraps.test("downcast1")
   let da = ba as! [Derived]
   let d0 = da[0]
   expectCrashLater()
-  da[1]
+  _ = da[1]
 }
 
 ArrayTraps.test("downcast2")
@@ -44,11 +37,11 @@ ArrayTraps.test("downcast2")
     { _isFastAssertConfiguration() },
     reason: "this trap is not guaranteed to happen in -Ounchecked"))
   .code {
-  let a: [AnyObject] = [ "String", 1 ]
+  let a: [AnyObject] = ["String", 1]
   let sa = a as! [NSString]
   let s0 = sa[0]
   expectCrashLater()
-  sa[1]
+  _ = sa[1]
 }
 
 ArrayTraps.test("downcast3")
@@ -63,7 +56,7 @@ ArrayTraps.test("downcast3")
   let d1a0 = d1a[0]
   let d1a1 = d1a[1]
   expectCrashLater()
-  d1a[2]
+  _ = d1a[2]
 }
 
 @objc protocol ObjCProto { }
@@ -79,7 +72,7 @@ ArrayTraps.test("downcast4")
   let da = ba as! [ObjCDerived]
   let d0 = da[0]
   expectCrashLater()
-  da[1]
+  _ = da[1]
 }
 
 ArrayTraps.test("bounds_with_downcast")
@@ -119,7 +112,7 @@ class ViolateInoutSafetySwitchToObjcBuffer {
   }
 
   @inline(never)
-  func runLoop(A: inout [ElementClass]) {
+  func runLoop(_ A: inout [ElementClass]) {
     // Simulate what happens if we hoist array properties out of a loop and the
     // loop calls a function that violates inout safety and overrides the array.
     let isNativeTypeChecked = A._hoistableIsNativeTypeChecked()
@@ -162,7 +155,7 @@ class ViolateInoutSafetyNeedElementTypeCheck {
   }
 
   @inline(never)
-  func runLoop(A: inout [ElementClass]) {
+  func runLoop(_ A: inout [ElementClass]) {
     // Simulate what happens if we hoist array properties out of a loop and the
     // loop calls a function that violates inout safety and overrides the array.
     let isNativeTypeChecked = A._hoistableIsNativeTypeChecked()

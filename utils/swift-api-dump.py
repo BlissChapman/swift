@@ -95,6 +95,9 @@ def create_parser():
                         help='Add additional framework directories')
     parser.add_argument('-I', '--include-dir', action='append',
                         help='Add additional include directories')
+    parser.add_argument('--enable-infer-import-as-member', action='store_true',
+                        help='Infer when a global could be imported as a ' +
+                        'member.')
     return parser
 
 
@@ -116,7 +119,7 @@ def run_command(args):
 def collect_submodules(common_args, module):
     # Execute swift-ide-test to print the interface.
     my_args = ['-module-print-submodules', '-module-to-print=%s' % (module)]
-    (exitcode, out, err) = run_command(common_args + my_args)
+    (exitcode, out, _) = run_command(common_args + my_args)
     if exitcode != 0:
         print(
             'error: submodule collection failed for module %s with error %d' %
@@ -124,7 +127,7 @@ def collect_submodules(common_args, module):
         return ()
 
     # Find all of the submodule imports.
-    import_matcher = re.compile('.*import\s+%s\.([A-Za-z_0-9.]+)' % (module))
+    import_matcher = re.compile(r'.*import\s+%s\.([A-Za-z_0-9.]+)' % (module))
     submodules = set()
     for line in out.splitlines():
         match = import_matcher.match(line)
@@ -137,10 +140,10 @@ def collect_submodules(common_args, module):
 
 
 def print_command(cmd, outfile=""):
-    str = " ".join(cmd)
+    retstr = " ".join(cmd)
     if outfile != "":
-        str += " > " + outfile
-    print(str)
+        retstr += " > " + outfile
+    print(retstr)
 
 # Dump the API for the given module.
 
@@ -197,17 +200,19 @@ def pretty_sdk_name(sdk):
 
 
 def collect_frameworks(sdk):
-    (exitcode, sdk_path, err) = run_command(
+    (exitcode, sdk_path, _) = run_command(
         ["xcrun", "--show-sdk-path", "-sdk", sdk])
     if exitcode != 0:
-        print('error: framework collection failed with error %d' % (exitcode))
+        print('error: framework collection failed to find SDK path for %s '
+              'with error %d' % (sdk, exitcode))
         return ()
     sdk_path = sdk_path.rstrip()
 
-    (exitcode, sdk_version, err) = run_command(
+    (exitcode, sdk_version, _) = run_command(
         ["xcrun", "--show-sdk-version", "-sdk", sdk])
     if exitcode != 0:
-        print('error: framework collection failed with error %d' % (exitcode))
+        print('error: framework collection failed to find SDK version for %s '
+              'with error %d' % (sdk, exitcode))
         return ()
     sdk_version = sdk_version.rstrip()
 
@@ -216,7 +221,7 @@ def collect_frameworks(sdk):
 
     # Collect all of the framework names
     frameworks_dir = '%s/System/Library/Frameworks' % sdk_path
-    framework_matcher = re.compile('([A-Za-z_0-9.]+)\.framework')
+    framework_matcher = re.compile(r'([A-Za-z_0-9.]+)\.framework')
     frameworks = set()
     for entry in os.listdir(frameworks_dir):
         match = framework_matcher.match(entry)
@@ -229,8 +234,7 @@ def collect_frameworks(sdk):
 
 
 def create_dump_module_api_args(cmd_common, cmd_extra_args, sdk, module,
-                                target, source_filename, output_dir, quiet,
-                                verbose):
+                                target, output_dir, quiet, verbose):
 
     # Determine the SDK root and collect the set of frameworks.
     (frameworks, sdk_root) = collect_frameworks(sdk)
@@ -287,7 +291,8 @@ def main():
 
     # Determine the set of extra arguments we'll use.
     extra_args = ['-skip-imports']
-
+    if args.enable_infer_import_as_member:
+        extra_args = extra_args + ['-enable-infer-import-as-member']
     # Create a .swift file we can feed into swift-ide-test
     subprocess.call(['touch', source_filename])
 
@@ -296,7 +301,7 @@ def main():
     for sdk in args.sdk:
         jobs = jobs + create_dump_module_api_args(
             cmd_common, extra_args, sdk, args.module,
-            args.target, source_filename, args.output_dir,
+            args.target, args.output_dir,
             args.quiet, args.verbose)
 
     # Execute the API dumps

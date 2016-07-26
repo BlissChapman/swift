@@ -109,8 +109,10 @@ static bool readOptionsBlock(llvm::BitstreamCursor &cursor,
     case options_block::IS_TESTABLE:
       extendedInfo.setIsTestable(true);
       break;
-    case options_block::IS_RESILIENT:
-      extendedInfo.setIsResilient(true);
+    case options_block::RESILIENCE_STRATEGY:
+      unsigned Strategy;
+      options_block::ResilienceStrategyLayout::readRecord(scratch, Strategy);
+      extendedInfo.setResilienceStrategy(ResilienceStrategy(Strategy));
       break;
     default:
       // Unknown options record, possibly for use by a future version of the
@@ -186,6 +188,11 @@ validateControlBlock(llvm::BitstreamCursor &cursor,
           else
             result.status = Status::FormatTooNew;
         }
+      }
+
+      // This field was added later; be resilient against its absence.
+      if (scratch.size() > 2) {
+        result.shortVersion = blobData.slice(0, scratch[2]);
       }
 
       versionSeen = true;
@@ -621,7 +628,7 @@ ModuleFile::readGroupTable(ArrayRef<uint64_t> Fields, StringRef BlobData) {
     new ModuleFile::GroupNameTable);
   auto Data = reinterpret_cast<const uint8_t *>(BlobData.data());
   unsigned GroupCount = endian::readNext<uint32_t, little, unaligned>(Data);
-  for (unsigned I = 0; I < GroupCount; I ++) {
+  for (unsigned I = 0; I < GroupCount; I++) {
     auto RawSize = endian::readNext<uint32_t, little, unaligned>(Data);
     auto RawText = StringRef(reinterpret_cast<const char *>(Data), RawSize);
     Data += RawSize;
@@ -741,14 +748,15 @@ static bool isTargetTooNew(const llvm::Triple &moduleTarget,
 ModuleFile::ModuleFile(
     std::unique_ptr<llvm::MemoryBuffer> moduleInputBuffer,
     std::unique_ptr<llvm::MemoryBuffer> moduleDocInputBuffer,
-    bool isFramework,
+    bool isFramework, serialization::ValidationInfo &info,
     serialization::ExtendedValidationInfo *extInfo)
     : ModuleInputBuffer(std::move(moduleInputBuffer)),
       ModuleDocInputBuffer(std::move(moduleDocInputBuffer)),
       ModuleInputReader(getStartBytePtr(this->ModuleInputBuffer.get()),
                         getEndBytePtr(this->ModuleInputBuffer.get())),
       ModuleDocInputReader(getStartBytePtr(this->ModuleDocInputBuffer.get()),
-                           getEndBytePtr(this->ModuleDocInputBuffer.get())) {
+                           getEndBytePtr(this->ModuleDocInputBuffer.get())),
+      DeserializedTypeCallback([](Type ty) {}) {
   assert(getStatus() == Status::Valid);
   Bits.IsFramework = isFramework;
 
@@ -773,7 +781,7 @@ ModuleFile::ModuleFile(
     case CONTROL_BLOCK_ID: {
       cursor.EnterSubBlock(CONTROL_BLOCK_ID);
 
-      auto info = validateControlBlock(cursor, scratch, extInfo);
+      info = validateControlBlock(cursor, scratch, extInfo);
       if (info.status != Status::Valid) {
         error(info.status);
         return;
@@ -1553,19 +1561,8 @@ Optional<CommentInfo> ModuleFile::getCommentForDecl(const Decl *D) const {
 
 const static StringRef Separator = "/";
 
-static const Decl* getGroupDecl(const Decl *D) {
-  auto GroupD = D;
-
-  // Extensions always exist in the same group with the nominal.
-  if (auto ED = dyn_cast_or_null<ExtensionDecl>(D->getDeclContext()->
-                                                getInnermostTypeContext())) {
-    GroupD = ED->getExtendedType()->getAnyNominal();
-  }
-  return GroupD;
-}
-
 Optional<StringRef> ModuleFile::getGroupNameById(unsigned Id) const {
-  if(!GroupNamesMap || GroupNamesMap->count(Id) == 0)
+  if (!GroupNamesMap || GroupNamesMap->count(Id) == 0)
     return None;
   auto Original = (*GroupNamesMap)[Id];
   if (Original.empty())
@@ -1576,7 +1573,7 @@ Optional<StringRef> ModuleFile::getGroupNameById(unsigned Id) const {
 }
 
 Optional<StringRef> ModuleFile::getSourceFileNameById(unsigned Id) const {
-  if(!GroupNamesMap || GroupNamesMap->count(Id) == 0)
+  if (!GroupNamesMap || GroupNamesMap->count(Id) == 0)
     return None;
   auto Original = (*GroupNamesMap)[Id];
   if (Original.empty())
@@ -1589,8 +1586,7 @@ Optional<StringRef> ModuleFile::getSourceFileNameById(unsigned Id) const {
 }
 
 Optional<StringRef> ModuleFile::getGroupNameForDecl(const Decl *D) const {
-  auto GroupD = getGroupDecl(D);
-  auto Triple = getCommentForDecl(GroupD);
+  auto Triple = getCommentForDecl(D);
   if (!Triple.hasValue()) {
     return None;
   }
@@ -1600,8 +1596,7 @@ Optional<StringRef> ModuleFile::getGroupNameForDecl(const Decl *D) const {
 
 Optional<StringRef>
 ModuleFile::getSourceFileNameForDecl(const Decl *D) const {
-  auto GroupD = getGroupDecl(D);
-  auto Triple = getCommentForDecl(GroupD);
+  auto Triple = getCommentForDecl(D);
   if (!Triple.hasValue()) {
     return None;
   }
@@ -1644,6 +1639,14 @@ ModuleFile::getCommentForDeclByUSR(StringRef USR) const {
     return None;
 
   return *I;
+}
+
+Optional<StringRef>
+ModuleFile::getGroupNameByUSR(StringRef USR) const {
+  if (auto Comment = getCommentForDeclByUSR(USR)) {
+    return getGroupNameById(Comment.getValue().Group);
+  }
+  return None;
 }
 
 Identifier ModuleFile::getDiscriminatorForPrivateValue(const ValueDecl *D) {

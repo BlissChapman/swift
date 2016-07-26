@@ -16,6 +16,7 @@
 #include "swift/Basic/LLVM.h"
 #include "swift/Basic/OptionSet.h"
 
+#include <string>
 #include <vector>
 
 namespace swift {
@@ -23,6 +24,7 @@ class ASTContext;
 class ASTPrinter;
 class ModuleDecl;
 class SourceFile;
+class Type;
 struct PrintOptions;
 
 namespace ide {
@@ -42,6 +44,15 @@ typedef OptionSet<ModuleTraversal> ModuleTraversalOptions;
 
 ArrayRef<StringRef> collectModuleGroups(ModuleDecl *M,
                                         std::vector<StringRef> &Scratch);
+
+Optional<StringRef>
+findGroupNameForUSR(ModuleDecl *M, StringRef USR);
+
+bool printTypeInterface(ModuleDecl *M, Type Ty, ASTPrinter &Printer,
+                        std::string &TypeName, std::string &Error);
+
+bool printTypeInterface(ModuleDecl *M, StringRef TypeUSR, ASTPrinter &Printer,
+                        std::string &TypeName, std::string &Error);
 
 void printModuleInterface(ModuleDecl *M, Optional<StringRef> Group,
                           ModuleTraversalOptions TraversalOptions,

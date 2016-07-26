@@ -41,8 +41,8 @@ namespace {
     bool mayAppear = false;
       
     // This is true if a '{{none}}' is present to mark that there should be no
-    // fixits at all.
-    bool noFixitsMayAppear = false;
+    // extra fixits.
+    bool noExtraFixitsMayAppear = false;
 
     // This is the raw input buffer for the message text, the part in the
     // {{...}}
@@ -364,7 +364,7 @@ bool DiagnosticVerifier::verifyFile(unsigned BufferID,
       
       // Special case for specifying no fixits should appear.
       if (FixItStr == "none") {
-        Expected.noFixitsMayAppear = true;
+        Expected.noExtraFixitsMayAppear = true;
         continue;
       }
         
@@ -459,26 +459,28 @@ bool DiagnosticVerifier::verifyFile(unsigned BufferID,
       if (!checkForFixIt(fixit, FoundDiagnostic, InputFile))
         IncorrectFixit = fixit.StartLoc;
     }
+
+    bool matchedAllFixIts =
+      expected.Fixits.size() == FoundDiagnostic.getFixIts().size();
     
     // If we have any expected fixits that didn't get matched, then they are
     // wrong.  Replace the failed fixit with what actually happened.
     if (IncorrectFixit) {
       if (FoundDiagnostic.getFixIts().empty()) {
         addError(IncorrectFixit, "expected fix-it not seen");
-        continue;
+      } else {
+        // If we had an incorrect expected fixit, render it and produce a fixit
+        // of our own.
+        auto actual = renderFixits(FoundDiagnostic.getFixIts(), InputFile);
+        auto replStartLoc = SMLoc::getFromPointer(expected.Fixits[0].StartLoc);
+        auto replEndLoc = SMLoc::getFromPointer(expected.Fixits.back().EndLoc);
+        
+        llvm::SMFixIt fix(llvm::SMRange(replStartLoc, replEndLoc), actual);
+        addError(IncorrectFixit,
+                 "expected fix-it not seen; actual fix-its: " + actual, fix);
       }
-      
-      // If we had an incorrect expected fixit, render it and produce a fixit
-      // of our own.
-      auto actual = renderFixits(FoundDiagnostic.getFixIts(), InputFile);
-      auto replStartLoc = SMLoc::getFromPointer(expected.Fixits[0].StartLoc);
-      auto replEndLoc = SMLoc::getFromPointer(expected.Fixits.back().EndLoc);
-      
-      llvm::SMFixIt fix(llvm::SMRange(replStartLoc, replEndLoc), actual);
-      addError(IncorrectFixit,
-               "expected fix-it not seen; actual fix-its: " + actual, fix);
-    } else if (expected.noFixitsMayAppear &&
-               !FoundDiagnostic.getFixIts().empty() &&
+    } else if (expected.noExtraFixitsMayAppear &&
+               !matchedAllFixIts &&
                !expected.mayAppear) {
       // If there was no fixit specification, but some were produced, add a
       // fixit to add them in.

@@ -4,24 +4,21 @@
 // RUN: %target-run %t/main.out
 // RUN: %target-run %t/main.out --locale ru_RU.UTF-8
 // REQUIRES: executable_test
-// XFAIL: linux
 
 import StdlibUnittest
-import Darwin
+#if os(Linux) || os(FreeBSD) || os(PS4) || os(Android)
+  import Glibc
+#else
+  import Darwin
+#endif
 import PrintTestTypes
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 let PrintTests = TestSuite("PrintFloat")
 
 PrintTests.setUp {
-  if let localeArgIndex = Process.arguments.index(of: "--locale") {
-    let locale = Process.arguments[localeArgIndex + 1]
+  if let localeArgIndex = CommandLine.arguments.index(of: "--locale") {
+    let locale = CommandLine.arguments[localeArgIndex + 1]
     expectEqual("ru_RU.UTF-8", locale)
     setlocale(LC_ALL, locale)
   } else {
@@ -30,7 +27,7 @@ PrintTests.setUp {
 }
 
 PrintTests.test("CustomStringConvertible") {
-  func hasDescription(any: Any) {
+  func hasDescription(_ any: Any) {
     expectTrue(any is CustomStringConvertible)
   }
 
@@ -39,10 +36,10 @@ PrintTests.test("CustomStringConvertible") {
 }
 
 PrintTests.test("Printable") {
-  func asFloat32(f: Float32) -> Float32 { return f }
-  func asFloat64(f: Float64) -> Float64 { return f }
+  func asFloat32(_ f: Float32) -> Float32 { return f }
+  func asFloat64(_ f: Float64) -> Float64 { return f }
 #if arch(i386) || arch(x86_64)
-  func asFloat80(f: Swift.Float80) -> Swift.Float80 { return f }
+  func asFloat80(_ f: Swift.Float80) -> Swift.Float80 { return f }
 #endif
 
   expectPrinted("1.0", Float(1.0))
@@ -58,6 +55,9 @@ PrintTests.test("Printable") {
   expectPrinted("inf", Float.infinity)
   expectPrinted("-inf", -Float.infinity)
   expectPrinted("nan", Float.nan)
+  expectPrinted("nan", -Float.nan)
+  expectPrinted("nan", Float.signalingNaN)
+  expectPrinted("nan", -Float.signalingNaN)
   expectPrinted("0.0", asFloat32(0.0))
   expectPrinted("1.0", asFloat32(1.0))
   expectPrinted("-1.0", asFloat32(-1.0))
@@ -67,11 +67,28 @@ PrintTests.test("Printable") {
   expectPrinted("inf", Double.infinity)
   expectPrinted("-inf", -Double.infinity)
   expectPrinted("nan", Double.nan)
+  expectPrinted("nan", -Double.nan)
+  expectPrinted("nan", Double.signalingNaN)
+  expectPrinted("nan", -Double.signalingNaN)
   expectPrinted("0.0", asFloat64(0.0))
   expectPrinted("1.0", asFloat64(1.0))
   expectPrinted("-1.0", asFloat64(-1.0))
   expectPrinted("100.125", asFloat64(100.125))
   expectPrinted("-100.125", asFloat64(-100.125))
+
+#if arch(i386) || arch(x86_64)
+  expectPrinted("inf", Float80.infinity)
+  expectPrinted("-inf", -Float80.infinity)
+  expectPrinted("nan", Float80.nan)
+  expectPrinted("nan", -Float80.nan)
+  expectPrinted("nan", Float80.signalingNaN)
+  expectPrinted("nan", -Float80.signalingNaN)
+  expectPrinted("0.0", asFloat80(0.0))
+  expectPrinted("1.0", asFloat80(1.0))
+  expectPrinted("-1.0", asFloat80(-1.0))
+  expectPrinted("100.125", asFloat80(100.125))
+  expectPrinted("-100.125", asFloat80(-100.125))
+#endif
 
   expectPrinted("1.00001", asFloat32(1.00001))
   expectPrinted("1.25e+17", asFloat32(125000000000000000.0))
@@ -192,17 +209,61 @@ PrintTests.test("Printable") {
   expectDebugPrinted("1.24999998e+17", asFloat32(125000000000000000.0))
   expectDebugPrinted("1.25", asFloat32(1.25))
   expectDebugPrinted("1.24999997e-05", asFloat32(0.0000125))
+  expectDebugPrinted("inf", Float.infinity)
+  expectDebugPrinted("-inf", -Float.infinity)
+  expectDebugPrinted("nan", Float.nan)
+#if !arch(arm)
+  expectDebugPrinted("-nan", -Float.nan)
+#endif
+  expectDebugPrinted("nan(0xffff)", Float(nan: 65535, signaling: false))
+#if !arch(arm)
+  expectDebugPrinted("-nan(0xffff)", -Float(nan: 65535, signaling: false)) // fail
+#endif
+  expectDebugPrinted("nan(0x1fffff)", Float(bitPattern: 0x7fff_ffff))
+  expectDebugPrinted("nan(0x1fffff)", Float(bitPattern: 0x7fdf_ffff))
+#if !arch(i386) && !arch(arm)
+  expectDebugPrinted("snan", Float.signalingNaN)
+  expectDebugPrinted("snan(0xffff)", Float(nan: 65535, signaling: true))
+  expectDebugPrinted("-snan(0xffff)", -Float(nan: 65535, signaling: true))
+  expectDebugPrinted("snan(0x1fffff)", Float(bitPattern: 0x7fbf_ffff))
+#endif
 
   expectDebugPrinted("1.1000000000000001", asFloat64(1.1))
   expectDebugPrinted("1.25e+17", asFloat64(125000000000000000.0))
   expectDebugPrinted("1.25", asFloat64(1.25))
   expectDebugPrinted("1.2500000000000001e-05", asFloat64(0.0000125))
+  expectDebugPrinted("inf", Double.infinity)
+  expectDebugPrinted("-inf", -Double.infinity)
+  expectDebugPrinted("nan", Double.nan)
+  expectDebugPrinted("-nan", -Double.nan)
+  expectDebugPrinted("nan(0xffff)", Double(nan: 65535, signaling: false))
+  expectDebugPrinted("-nan(0xffff)", -Double(nan: 65535, signaling: false))
+  expectDebugPrinted("nan(0x3ffffffffffff)", Float64(bitPattern: 0x7fff_ffff_ffff_ffff))
+  expectDebugPrinted("nan(0x3ffffffffffff)", Float64(bitPattern: 0x7ffb_ffff_ffff_ffff))
+#if !arch(i386)
+  expectDebugPrinted("snan", Double.signalingNaN)
+  expectDebugPrinted("snan(0xffff)", Double(nan: 65535, signaling: true))
+  expectDebugPrinted("-snan(0xffff)", -Double(nan: 65535, signaling: true))
+  expectDebugPrinted("snan(0x3ffffffffffff)", Float64(bitPattern: 0x7ff7_ffff_ffff_ffff))
+#endif
 
 #if arch(i386) || arch(x86_64)
   expectDebugPrinted("1.10000000000000000002", asFloat80(1.1))
   expectDebugPrinted("125000000000000000.0", asFloat80(125000000000000000.0))
   expectDebugPrinted("1.25", asFloat80(1.25))
   expectDebugPrinted("1.25000000000000000001e-05", asFloat80(0.0000125))
+  expectDebugPrinted("inf", Float80.infinity)
+  expectDebugPrinted("-inf", -Float80.infinity)
+  expectDebugPrinted("nan", Float80.nan)
+  expectDebugPrinted("-nan", -Float80.nan)
+  expectDebugPrinted("nan(0xffff)", Float80(nan: 65535, signaling: false))
+  expectDebugPrinted("-nan(0xffff)", -Float80(nan: 65535, signaling: false))
+  expectDebugPrinted("nan(0x1fffffffffffffff)", Float80(sign: .plus, exponentBitPattern: 0x7fff, significandBitPattern: 0xffff_ffff_ffff_ffff))
+  expectDebugPrinted("nan(0x1fffffffffffffff)", Float80(sign: .plus, exponentBitPattern: 0x7fff, significandBitPattern: 0xdfff_ffff_ffff_ffff))
+  expectDebugPrinted("snan", Float80.signalingNaN)
+  expectDebugPrinted("snan(0xffff)", Float80(nan: 65535, signaling: true))
+  expectDebugPrinted("-snan(0xffff)", -Float80(nan: 65535, signaling: true))
+  expectDebugPrinted("snan(0x1fffffffffffffff)", Float80(sign: .plus, exponentBitPattern: 0x7fff, significandBitPattern: 0xbfff_ffff_ffff_ffff))
 #endif
 }
 

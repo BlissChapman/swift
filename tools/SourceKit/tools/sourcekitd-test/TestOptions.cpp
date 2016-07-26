@@ -133,10 +133,11 @@ bool TestOptions::parseArgs(llvm::ArrayRef<const char *> Args) {
         .Default(SourceKitRequest::None);
       if (Request == SourceKitRequest::None) {
         llvm::errs() << "error: invalid request, expected one of "
-            << "version/demangle/mangle/index/complete/cursor/related-idents/syntax-map/structure/"
-               "format/expand-placeholder/doc-info/sema/interface-gen/interface-gen-open/"
-               "find-usr/find-interface/open/edit/print-annotations/extract-comment/"
-               "module-groups\n";
+            << "version/demangle/mangle/index/complete/complete.open/complete.cursor/"
+               "complete.update/complete.cache.ondisk/complete.cache.setpopularapi/"
+               "cursor/related-idents/syntax-map/structure/format/expand-placeholder/"
+               "doc-info/sema/interface-gen/interface-gen-openfind-usr/find-interface/"
+               "open/edit/print-annotations/print-diags/extract-comment/module-groups\n";
         return true;
       }
       break;
@@ -182,6 +183,10 @@ bool TestOptions::parseArgs(llvm::ArrayRef<const char *> Args) {
       ModuleGroupName = InputArg->getValue();
       break;
 
+    case OPT_interested_usr:
+      InterestedUSR = InputArg->getValue();
+      break;
+
     case OPT_header:
       HeaderPath = InputArg->getValue();
       break;
@@ -211,6 +216,10 @@ bool TestOptions::parseArgs(llvm::ArrayRef<const char *> Args) {
       CheckInterfaceIsASCII = true;
       break;
 
+    case OPT_dont_print_request:
+      PrintRequest = false;
+      break;
+
     case OPT_print_response_as_json:
       PrintResponseAsJSON = true;
       break;
@@ -237,11 +246,21 @@ bool TestOptions::parseArgs(llvm::ArrayRef<const char *> Args) {
       SynthesizedExtensions = true;
       break;
 
+    case OPT_async:
+      isAsyncRequest = true;
+      break;
+
     case OPT_UNKNOWN:
       llvm::errs() << "error: unknown argument: "
                    << InputArg->getAsString(ParsedArgs) << '\n';
       return true;
     }
+  }
+
+  if (Request == SourceKitRequest::InterfaceGenOpen && isAsyncRequest) {
+    llvm::errs()
+        << "error: cannot use -async with interface-gen-open request\n";
+    return true;
   }
 
   return false;

@@ -189,7 +189,8 @@ public:
   friend class SILVisitor<ClosureCloner>;
   friend class SILCloner<ClosureCloner>;
 
-  ClosureCloner(SILFunction *Orig, StringRef ClonedName,
+  ClosureCloner(SILFunction *Orig, IsFragile_t Fragile,
+                StringRef ClonedName,
                 TypeSubstitutionMap &InterfaceSubs,
                 TypeSubstitutionMap &ContextSubs,
                 ArrayRef<Substitution> ApplySubs,
@@ -211,7 +212,8 @@ protected:
   }
 
 private:
-  static SILFunction *initCloned(SILFunction *Orig, StringRef ClonedName,
+  static SILFunction *initCloned(SILFunction *Orig, IsFragile_t Fragile,
+                                 StringRef ClonedName,
                                  TypeSubstitutionMap &InterfaceSubs,
                                  IndicesSet &PromotableIndices);
 
@@ -305,13 +307,14 @@ ReachabilityInfo::isReachable(SILBasicBlock *From, SILBasicBlock *To) {
   return FromSet.test(FI->second);
 }
 
-ClosureCloner::ClosureCloner(SILFunction *Orig, StringRef ClonedName,
+ClosureCloner::ClosureCloner(SILFunction *Orig, IsFragile_t Fragile,
+                             StringRef ClonedName,
                              TypeSubstitutionMap &InterfaceSubs,
                              TypeSubstitutionMap &ContextSubs,
                              ArrayRef<Substitution> ApplySubs,
                              IndicesSet &PromotableIndices)
   : TypeSubstCloner<ClosureCloner>(
-                           *initCloned(Orig, ClonedName, InterfaceSubs,
+                           *initCloned(Orig, Fragile, ClonedName, InterfaceSubs,
                                        PromotableIndices),
                            *Orig, ContextSubs, ApplySubs),
     Orig(Orig), PromotableIndices(PromotableIndices) {
@@ -329,7 +332,9 @@ static void
 computeNewArgInterfaceTypes(SILFunction *F,
                             IndicesSet &PromotableIndices,
                             SmallVectorImpl<SILParameterInfo> &OutTys) {
-  auto Parameters = F->getLoweredFunctionType()->getParameters();
+  auto FunctionTy = F->getLoweredFunctionType();
+  auto Parameters = FunctionTy->getParameters();
+  auto NumIndirectResults = FunctionTy->getNumIndirectResults();
 
   DEBUG(llvm::dbgs() << "Preparing New Args!\n");
 
@@ -337,11 +342,16 @@ computeNewArgInterfaceTypes(SILFunction *F,
   for (unsigned Index : indices(Parameters)) {
     auto &param = Parameters[Index];
 
+    // The PromotableIndices index is expressed as the argument index (num
+    // indirect result + param index). Add back the num indirect results to get
+    // the arg index when working with PromotableIndices.
+    unsigned ArgIndex = Index + NumIndirectResults;
+
     DEBUG(llvm::dbgs() << "Index: " << Index << "; PromotableIndices: "
-          << (PromotableIndices.count(Index)?"yes":"no")
+          << (PromotableIndices.count(ArgIndex)?"yes":"no")
           << " Param: "; param.dump());
 
-    if (!PromotableIndices.count(Index)) {
+    if (!PromotableIndices.count(ArgIndex)) {
       OutTys.push_back(param);
       continue;
     }
@@ -366,15 +376,22 @@ computeNewArgInterfaceTypes(SILFunction *F,
 }
 
 static std::string getSpecializedName(SILFunction *F,
+                                      IsFragile_t Fragile,
                                       IndicesSet &PromotableIndices) {
   Mangle::Mangler M;
   auto P = SpecializationPass::CapturePromotion;
-  FunctionSignatureSpecializationMangler FSSM(P, M, F);
+  FunctionSignatureSpecializationMangler FSSM(P, M, Fragile, F);
   CanSILFunctionType FTy = F->getLoweredFunctionType();
 
   ArrayRef<SILParameterInfo> Parameters = FTy->getParameters();
+  auto NumIndirectResults = FTy->getNumIndirectResults();
+
   for (unsigned Index : indices(Parameters)) {
-    if (!PromotableIndices.count(Index))
+    // The PromotableIndices index is expressed as the argument index (num
+    // indirect result + param index). Add back the num indirect results to get
+    // the arg index when working with PromotableIndices.
+    unsigned ArgIndex = Index + NumIndirectResults;
+    if (!PromotableIndices.count(ArgIndex))
       continue;
     FSSM.setArgumentBoxToValue(Index);
   }
@@ -394,7 +411,8 @@ static std::string getSpecializedName(SILFunction *F,
 /// *NOTE* PromotableIndices only contains the container value of the box, not
 /// the address value.
 SILFunction*
-ClosureCloner::initCloned(SILFunction *Orig, StringRef ClonedName,
+ClosureCloner::initCloned(SILFunction *Orig, IsFragile_t Fragile,
+                          StringRef ClonedName,
                           TypeSubstitutionMap &InterfaceSubs,
                           IndicesSet &PromotableIndices) {
   SILModule &M = Orig->getModule();
@@ -425,9 +443,9 @@ ClosureCloner::initCloned(SILFunction *Orig, StringRef ClonedName,
          && "SILFunction missing DebugScope");
   assert(!Orig->isGlobalInit() && "Global initializer cannot be cloned");
 
-  auto *Fn = M.getOrCreateFunction(
+  auto *Fn = M.createFunction(
       Orig->getLinkage(), ClonedName, SubstTy, Orig->getContextGenericParams(),
-      Orig->getLocation(), Orig->isBare(), IsNotTransparent, Orig->isFragile(),
+      Orig->getLocation(), Orig->isBare(), IsNotTransparent, Fragile,
       Orig->isThunk(), Orig->getClassVisibility(), Orig->getInlineStrategy(),
       Orig->getEffectsKind(), Orig, Orig->getDebugScope());
   for (auto &Attr : Orig->getSemanticsAttrs())
@@ -645,6 +663,8 @@ isNonmutatingCapture(SILArgument *BoxArg) {
 static bool
 isNonescapingUse(Operand *O, SmallVectorImpl<SILInstruction*> &Mutations) {
   auto *U = O->getUser();
+  if (U->isOpenedArchetypeOperand(*O))
+    return true;
   // Marking the boxed value as escaping is OK. It's just a DI annotation.
   if (isa<MarkFunctionEscapeInst>(U))
     return true;
@@ -858,14 +878,21 @@ constructClonedFunction(PartialApplyInst *PAI, FunctionRefInst *FRI,
 
   // Create the Cloned Name for the function.
   SILFunction *Orig = FRI->getReferencedFunction();
-  auto ClonedName = getSpecializedName(Orig, PromotableIndices);
+
+  IsFragile_t Fragile = IsNotFragile;
+  if (F->isFragile() && Orig->isFragile())
+    Fragile = IsFragile;
+
+  auto ClonedName = getSpecializedName(Orig, Fragile, PromotableIndices);
 
   // If we already have such a cloned function in the module then just use it.
-  if (auto *PrevF = F->getModule().lookUpFunction(ClonedName))
+  if (auto *PrevF = F->getModule().lookUpFunction(ClonedName)) {
+    assert(PrevF->isFragile() == Fragile);
     return PrevF;
+  }
 
   // Otherwise, create a new clone.
-  ClosureCloner cloner(Orig, ClonedName, InterfaceSubs,
+  ClosureCloner cloner(Orig, Fragile, ClonedName, InterfaceSubs,
                        ContextSubs, ApplySubs, PromotableIndices);
   cloner.populateCloned();
   return cloner.getCloned();
@@ -895,19 +922,20 @@ processPartialApplyInst(PartialApplyInst *PAI, IndicesSet &PromotableIndices,
 
   // Populate the argument list for a new partial_apply instruction, taking into
   // consideration any captures.
-  auto CalleePInfo =
-      PAI->getCallee()->getType().castTo<SILFunctionType>()->getParameters();
-  auto PInfo = PAI->getType().castTo<SILFunctionType>()->getParameters();
-  unsigned FirstIndex = PInfo.size();
+  auto CalleeFunctionTy = PAI->getCallee()->getType().castTo<SILFunctionType>();
+  auto CalleePInfo = CalleeFunctionTy->getParameters();
+  unsigned FirstIndex =
+      PAI->getType().castTo<SILFunctionType>()->getNumSILArguments();
   unsigned OpNo = 1, OpCount = PAI->getNumOperands();
   SmallVector<SILValue, 16> Args;
+  auto NumIndirectResults = CalleeFunctionTy->getNumIndirectResults();
   while (OpNo != OpCount) {
     unsigned Index = OpNo - 1 + FirstIndex;
     if (PromotableIndices.count(Index)) {
       SILValue BoxValue = PAI->getOperand(OpNo);
       AllocBoxInst *ABI = cast<AllocBoxInst>(BoxValue);
 
-      SILParameterInfo CPInfo = CalleePInfo[Index];
+      SILParameterInfo CPInfo = CalleePInfo[Index - NumIndirectResults];
       assert(CPInfo.getSILType() == BoxValue->getType() &&
              "SILType of parameter info does not match type of parameter");
       // Cleanup the captured argument.

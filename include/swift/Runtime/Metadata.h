@@ -25,40 +25,17 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <string.h>
 #include "swift/Runtime/Config.h"
 #include "swift/ABI/MetadataValues.h"
 #include "swift/ABI/System.h"
 #include "swift/Basic/Malloc.h"
 #include "swift/Basic/FlaggedPointer.h"
 #include "swift/Basic/RelativePointer.h"
+#include "../../../stdlib/public/SwiftShims/HeapObject.h"
 
 namespace swift {
 
-/// A bump pointer for metadata allocations. Since metadata is (currently)
-/// never released, it does not support deallocation. This allocator by itself
-/// is not thread-safe; in concurrent uses, allocations must be guarded by
-/// a lock, such as the per-metadata-cache lock used to guard metadata
-/// instantiations. All allocations are pointer-aligned.
-class MetadataAllocator {
-  /// Address of the next available space. The allocator grabs a page at a time,
-  /// so the need for a new page can be determined by page alignment.
-  ///
-  /// Initializing to -1 instead of nullptr ensures that the first allocation
-  /// triggers a page allocation since it will always span a "page" boundary.
-  char *next = (char*)(~(uintptr_t)0U);
-  
-public:
-  MetadataAllocator() = default;
-
-  // Don't copy or move, please.
-  MetadataAllocator(const MetadataAllocator &) = delete;
-  MetadataAllocator(MetadataAllocator &&) = delete;
-  MetadataAllocator &operator=(const MetadataAllocator &) = delete;
-  MetadataAllocator &operator=(MetadataAllocator &&) = delete;
-  
-  void *alloc(size_t size);
-};
-  
 template <unsigned PointerSize>
 struct RuntimeTarget;
 
@@ -90,6 +67,10 @@ struct InProcess {
   
   template <typename T, bool Nullable = false>
   using FarRelativeDirectPointer = FarRelativeDirectPointer<T, Nullable>;
+
+  template <typename T, bool Nullable = false>
+  using FarRelativeIndirectablePointer =
+    FarRelativeIndirectablePointer<T, Nullable>;
   
   template <typename T, bool Nullable = true>
   using RelativeDirectPointer = RelativeDirectPointer<T, Nullable>;
@@ -118,6 +99,9 @@ struct External {
   
   template <typename T, bool Nullable = false>
   using FarRelativeDirectPointer = StoredPointer;
+
+  template <typename T, bool Nullable = false>
+  using FarRelativeIndirectablePointer = StoredSize;
   
   template <typename T, bool Nullable = true>
   using RelativeDirectPointer = int32_t;
@@ -144,6 +128,10 @@ using ConstTargetFarRelativeDirectPointer
 template <typename Runtime, typename Pointee, bool Nullable = true>
 using TargetRelativeDirectPointer
   = typename Runtime::template RelativeDirectPointer<Pointee, Nullable>;
+
+template <typename Runtime, typename Pointee, bool Nullable = true>
+using TargetFarRelativeIndirectablePointer
+  = typename Runtime::template FarRelativeIndirectablePointer<Pointee,Nullable>;
 
 struct HeapObject;
   
@@ -921,6 +909,9 @@ extern "C" const ValueWitnessTable _TWVXwGSqBo_; // weak Builtin.NativeObject?
 SWIFT_RUNTIME_EXPORT
 extern "C" const ExtraInhabitantsValueWitnessTable _TWVBb; // Builtin.BridgeObject
 
+SWIFT_RUNTIME_EXPORT
+extern "C" const ExtraInhabitantsValueWitnessTable _TWVBp; // Builtin.RawPointer
+
 #if SWIFT_OBJC_INTEROP
 // The ObjC-pointer table can be used for arbitrary ObjC pointer types.
 SWIFT_RUNTIME_EXPORT
@@ -1056,6 +1047,17 @@ static const uintptr_t ObjCReservedBitsMask =
 static const unsigned ObjCReservedLowBits =
   SWIFT_ABI_DEFAULT_OBJC_NUM_RESERVED_LOW_BITS;
 
+#elif defined(__s390x__)
+
+static const uintptr_t LeastValidPointerValue =
+  SWIFT_ABI_DEFAULT_LEAST_VALID_POINTER;
+static const uintptr_t SwiftSpareBitsMask =
+  SWIFT_ABI_S390X_SWIFT_SPARE_BITS_MASK;
+static const uintptr_t ObjCReservedBitsMask =
+  SWIFT_ABI_DEFAULT_OBJC_RESERVED_BITS_MASK;
+static const unsigned ObjCReservedLowBits =
+  SWIFT_ABI_DEFAULT_OBJC_NUM_RESERVED_LOW_BITS;
+
 #else
 
 static const uintptr_t LeastValidPointerValue =
@@ -1084,6 +1086,17 @@ template <typename Runtime> struct TargetClassMetadata;
 template <typename Runtime> struct TargetStructMetadata;
 template <typename Runtime> struct TargetOpaqueMetadata;
 
+// FIXME: https://bugs.swift.org/browse/SR-1155
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winvalid-offsetof"
+
+extern uint64_t RelativeDirectPointerNullPtr;
+
+#define RelativeDirectPointerNullPtrRef                                        \
+  *reinterpret_cast<ConstTargetFarRelativeDirectPointer<                       \
+      Runtime, TargetNominalTypeDescriptor, /*nullable*/ true> *>(             \
+      &RelativeDirectPointerNullPtr)
+
 /// The common structure of all type metadata.
 template <typename Runtime>
 struct TargetMetadata {
@@ -1104,9 +1117,7 @@ private:
 public:
   /// Get the metadata kind.
   MetadataKind getKind() const {
-    if (metadataKindIsClass(Kind))
-      return MetadataKind::Class;
-    return MetadataKind(Kind);
+    return getEnumeratedMetadataKind(Kind);
   }
   
   /// Set the metadata kind.
@@ -1218,16 +1229,17 @@ public:
   
   /// Get the nominal type descriptor if this metadata describes a nominal type,
   /// or return null if it does not.
-  ConstTargetFarRelativeDirectPointer<Runtime, TargetNominalTypeDescriptor,
-                                      /*nullable*/ true>
+  const ConstTargetFarRelativeDirectPointer<Runtime,
+                                            TargetNominalTypeDescriptor,
+                                            /*nullable*/ true> &
   getNominalTypeDescriptor() const {
     switch (getKind()) {
     case MetadataKind::Class: {
       const auto cls = static_cast<const TargetClassMetadata<Runtime> *>(this);
       if (!cls->isTypeMetadata())
-        return 0;
+        return RelativeDirectPointerNullPtrRef;
       if (cls->isArtificialSubclass())
-        return 0;
+        return RelativeDirectPointerNullPtrRef;
       return cls->getDescription();
     }
     case MetadataKind::Struct:
@@ -1245,7 +1257,7 @@ public:
     case MetadataKind::HeapLocalVariable:
     case MetadataKind::HeapGenericLocalVariable:
     case MetadataKind::ErrorObject:
-      return 0;
+      return RelativeDirectPointerNullPtrRef;
     }
   }
   
@@ -1297,6 +1309,8 @@ SWIFT_RUNTIME_EXPORT
 extern "C" const FullOpaqueMetadata _TMBo;        // Builtin.NativeObject
 SWIFT_RUNTIME_EXPORT
 extern "C" const FullOpaqueMetadata _TMBb;        // Builtin.BridgeObject
+SWIFT_RUNTIME_EXPORT
+extern "C" const FullOpaqueMetadata _TMBp;        // Builtin.RawPointer
 SWIFT_RUNTIME_EXPORT
 extern "C" const FullOpaqueMetadata _TMBB;        // Builtin.UnsafeValueBuffer
 #if SWIFT_OBJC_INTEROP
@@ -1480,14 +1494,31 @@ struct TargetNominalTypeDescriptor {
   };
   
   RelativeDirectPointerIntPair<TargetGenericMetadata<Runtime>,
-                               NominalTypeKind>
+                               NominalTypeKind, /*Nullable*/ true>
     GenericMetadataPatternAndKind;
+
+  using NonGenericMetadataAccessFunction = const Metadata *();
+
+  /// A pointer to the metadata access function for this type.
+  ///
+  /// The type of the returned function is speculative; in reality, it
+  /// takes one argument for each of the generic requirements, in the order
+  /// they are listed.  Therefore, the function type is correct only if
+  /// this type is non-generic.
+  ///
+  /// Not all type metadata have access functions.
+  TargetRelativeDirectPointer<Runtime, NonGenericMetadataAccessFunction,
+                              /*nullable*/ true> AccessFunction;
 
   /// A pointer to the generic metadata pattern that is used to instantiate
   /// instances of this type. Zero if the type is not generic.
   TargetGenericMetadata<Runtime> *getGenericMetadataPattern() const {
     return const_cast<TargetGenericMetadata<Runtime>*>(
                                     GenericMetadataPatternAndKind.getPointer());
+  }
+
+  NonGenericMetadataAccessFunction *getAccessFunction() const {
+    return AccessFunction.get();
   }
 
   NominalTypeKind getKind() const {
@@ -1537,6 +1568,11 @@ struct TargetClassMetadata : public TargetHeapMetadata<Runtime> {
       Reserved(0), ClassSize(classSize), ClassAddressPoint(classAddressPoint),
       Description(nullptr), IVarDestroyer(ivarDestroyer) {}
 
+  TargetClassMetadata(const TargetClassMetadata& other): Description(other.getDescription().get()) {
+    memcpy(this, &other, sizeof(*this));
+    setDescription(other.getDescription().get());
+  }
+
   /// The metadata for the superclass.  This is null for the root class.
   ConstTargetMetadataPointer<Runtime, swift::TargetClassMetadata> SuperClass;
 
@@ -1550,6 +1586,10 @@ struct TargetClassMetadata : public TargetHeapMetadata<Runtime> {
   /// order to indicate that this is a Swift metatype and therefore
   /// that the type metadata header is present.
   StoredPointer Data;
+
+  static constexpr StoredPointer offsetToData() {
+    return offsetof(TargetClassMetadata, Data);
+  }
 
   /// Is this object a valid swift type metadata?
   bool isTypeMetadata() const {
@@ -1608,8 +1648,10 @@ private:
   //   - "tabulated" virtual methods
 
 public:
-  ConstTargetFarRelativeDirectPointer<Runtime, TargetNominalTypeDescriptor,
-  /*nullable*/ true> getDescription() const {
+  const ConstTargetFarRelativeDirectPointer<Runtime,
+                                            TargetNominalTypeDescriptor,
+                                            /*nullable*/ true> &
+  getDescription() const {
     assert(isTypeMetadata());
     assert(!isArtificialSubclass());
     return Description;
@@ -1645,7 +1687,7 @@ public:
     Flags = flags;
   }
 
-  StoredPointer getInstanceSize() const {
+  StoredSize getInstanceSize() const {
     assert(isTypeMetadata());
     return InstanceSize;
   }
@@ -1742,27 +1784,16 @@ using ClassMetadata = TargetClassMetadata<InProcess>;
 
 /// The structure of metadata for heap-allocated local variables.
 /// This is non-type metadata.
-///
-/// It would be nice for tools to be able to dynamically discover the
-/// type of a heap-allocated local variable.  This should not require
-/// us to aggressively produce metadata for the type, though.  The
-/// obvious solution is to simply place the mangling of the type after
-/// the variable metadata.
-///
-/// One complication is that, in generic code, we don't want something
-/// as low-priority (sorry!) as the convenience of tools to force us
-/// to generate per-instantiation metadata for capturing variables.
-/// In these cases, the heap-destructor function will be using
-/// information stored in the allocated object (rather than in
-/// metadata) to actually do the work of destruction, but even then,
-/// that information needn't be metadata for the actual variable type;
-/// consider the case of local variable of type (T, Int).
-///
-/// Anyway, that's all something to consider later.
 template <typename Runtime>
 struct TargetHeapLocalVariableMetadata
   : public TargetHeapMetadata<Runtime> {
-  // No extra fields for now.
+  using StoredPointer = typename Runtime::StoredPointer;
+  uint32_t OffsetToFirstCapture;
+  TargetPointer<Runtime, const char> CaptureDescription;
+
+  static bool classof(const TargetMetadata<Runtime> *metadata) {
+    return metadata->getKind() == MetadataKind::HeapLocalVariable;
+  }
 };
 using HeapLocalVariableMetadata
   = TargetHeapLocalVariableMetadata<InProcess>;
@@ -1801,6 +1832,8 @@ struct TargetForeignTypeMetadata : public TargetMetadata<Runtime> {
   using StoredSize = typename Runtime::StoredSize;
   using InitializationFunction_t =
     void (*)(TargetForeignTypeMetadata<Runtime> *selectedMetadata);
+  using RuntimeMetadataPointer =
+      ConstTargetMetadataPointer<Runtime, swift::TargetForeignTypeMetadata>;
 
   /// Foreign type metadata may have extra header fields depending on
   /// the flags.
@@ -1815,14 +1848,12 @@ struct TargetForeignTypeMetadata : public TargetMetadata<Runtime> {
     /// The Swift-mangled name of the type. This is the uniquing key for the
     /// type.
     TargetPointer<Runtime, const char> Name;
-    
+
     /// A pointer to the actual, runtime-uniqued metadata for this
     /// type.  This is essentially an invasive cache for the lookup
     /// structure.
-    mutable std::atomic<
-      ConstTargetMetadataPointer<Runtime, swift::TargetForeignTypeMetadata>
-    > Unique;
-    
+    mutable std::atomic<RuntimeMetadataPointer> Unique;
+
     /// Various flags.
     enum : StoredSize {
       /// This metadata has an initialization callback function.  If
@@ -1834,13 +1865,15 @@ struct TargetForeignTypeMetadata : public TargetMetadata<Runtime> {
 
   struct HeaderType : HeaderPrefix, TypeMetadataHeader {};
 
+  static constexpr int OffsetToName =
+    (int) offsetof(HeaderType, Name) - (int) sizeof(HeaderType);
+
   TargetPointer<Runtime, const char> getName() const {
     return reinterpret_cast<TargetPointer<Runtime, const char>>(
       asFullMetadata(this)->Name);
   }
-  
-  ConstTargetMetadataPointer<Runtime, swift::TargetForeignTypeMetadata>
-  getCachedUniqueMetadata() const {
+
+  RuntimeMetadataPointer getCachedUniqueMetadata() const {
 #if __alpha__
     // TODO: This can be a relaxed-order load if there is no initialization
     // function. On platforms we care about, consume is no more expensive than
@@ -1851,15 +1884,13 @@ struct TargetForeignTypeMetadata : public TargetMetadata<Runtime> {
 #endif
     return asFullMetadata(this)->Unique.load(SWIFT_MEMORY_ORDER_CONSUME);
   }
-  
-  void
-  setCachedUniqueMetadata(
-    ConstTargetMetadataPointer<Runtime, swift::TargetForeignTypeMetadata> unique)
-  const {
-    assert((asFullMetadata(this)->Unique == nullptr
-            || asFullMetadata(this)->Unique == unique)
-           && "already set unique metadata");
-    
+
+  void setCachedUniqueMetadata(RuntimeMetadataPointer unique) const {
+    assert((static_cast<RuntimeMetadataPointer>(asFullMetadata(this)->Unique) ==
+                nullptr ||
+            asFullMetadata(this)->Unique == unique) &&
+           "already set unique metadata");
+
     // If there is no initialization function, this can be a relaxed store.
     if (!hasInitializationFunction())
       asFullMetadata(this)->Unique.store(unique, std::memory_order_relaxed);
@@ -1928,9 +1959,9 @@ struct TargetValueMetadata : public TargetMetadata<Runtime> {
   Description;
 
   /// The parent type of this member type, or null if this is not a
-  /// member type.
-  FarRelativeIndirectablePointer<const TargetMetadata<Runtime>,
-    /*nullable*/ true> Parent;
+  /// member type.  It's acceptable to make this a direct pointer because
+  /// parent types are relatively uncommon.
+  TargetPointer<Runtime, const TargetMetadata<Runtime>> Parent;
 
   static bool classof(const TargetMetadata<Runtime> *metadata) {
     return metadata->getKind() == MetadataKind::Struct
@@ -2036,7 +2067,7 @@ struct TargetFunctionTypeMetadata : public TargetMetadata<Runtime> {
   // TODO: Make this target agnostic
   using Argument = FlaggedPointer<const TargetMetadata<Runtime> *, 0>;
 
-  TargetFunctionTypeFlags<Runtime> Flags;
+  TargetFunctionTypeFlags<StoredSize> Flags;
 
   /// The type metadata for the result type.
   ConstTargetMetadataPointer<Runtime, TargetMetadata> ResultType;
@@ -2107,12 +2138,12 @@ struct TargetTupleTypeMetadata : public TargetMetadata<Runtime> {
     }
   };
 
-  TargetPointer<Runtime, Element> getElements() {
-    return reinterpret_cast<TargetPointer<Runtime, Element>>(this + 1);
+  Element *getElements() {
+    return reinterpret_cast<Element*>(this + 1);
   }
 
-  TargetPointer<Runtime, const Element> getElements() const {
-    return reinterpret_cast<TargetPointer<Runtime, const Element>>(this + 1);
+  const Element *getElements() const {
+    return reinterpret_cast<const Element*>(this + 1);
   }
 
   const Element &getElement(unsigned i) const {
@@ -2314,8 +2345,8 @@ enum class ExistentialTypeRepresentation {
   Opaque,
   /// The type uses a class existential representation.
   Class,
-  /// The type uses the ErrorProtocol boxed existential representation.
-  ErrorProtocol,
+  /// The type uses the Error boxed existential representation.
+  Error,
 };
 
 /// The structure of existential type metadata.
@@ -2487,6 +2518,63 @@ struct TargetGenericMetadata {
   }
 };
 using GenericMetadata = TargetGenericMetadata<InProcess>;
+
+/// Heap metadata for a box, which may have been generated statically by the
+/// compiler or by the runtime.
+template <typename Runtime>
+struct TargetBoxHeapMetadata : public TargetHeapMetadata<Runtime> {
+  /// The offset from the beginning of a box to its value.
+  unsigned Offset;
+
+  constexpr TargetBoxHeapMetadata(MetadataKind kind, unsigned offset)
+  : TargetHeapMetadata<Runtime>(kind), Offset(offset) {}
+};
+using BoxHeapMetadata = TargetBoxHeapMetadata<InProcess>;
+
+/// Heap metadata for runtime-instantiated generic boxes.
+template <typename Runtime>
+struct TargetGenericBoxHeapMetadata : public TargetBoxHeapMetadata<Runtime> {
+  using super = TargetBoxHeapMetadata<Runtime>;
+  using super::Offset;
+
+  /// The type inside the box.
+  ConstTargetMetadataPointer<Runtime, TargetMetadata> BoxedType;
+
+  constexpr
+  TargetGenericBoxHeapMetadata(MetadataKind kind, unsigned offset,
+    ConstTargetMetadataPointer<Runtime, TargetMetadata> boxedType)
+  : TargetBoxHeapMetadata<Runtime>(kind, offset), BoxedType(boxedType)
+  {}
+
+  static unsigned getHeaderOffset(const Metadata *boxedType) {
+    // Round up the header size to alignment.
+    unsigned alignMask = boxedType->getValueWitnesses()->getAlignmentMask();
+    return (sizeof(HeapObject) + alignMask) & ~alignMask;
+  }
+
+  /// Project the value out of a box of this type.
+  OpaqueValue *project(HeapObject *box) const {
+    auto bytes = reinterpret_cast<char*>(box);
+    return reinterpret_cast<OpaqueValue *>(bytes + Offset);
+  }
+
+  /// Get the allocation size of this box.
+  unsigned getAllocSize() const {
+    return Offset + BoxedType->getValueWitnesses()->getSize();
+  }
+
+  /// Get the allocation alignment of this box.
+  unsigned getAllocAlignMask() const {
+    // Heap allocations are at least pointer aligned.
+    return BoxedType->getValueWitnesses()->getAlignmentMask()
+      | (alignof(void*) - 1);
+  }
+
+  static bool classof(const TargetMetadata<Runtime> *metadata) {
+    return metadata->getKind() == MetadataKind::HeapGenericLocalVariable;
+  }
+};
+using GenericBoxHeapMetadata = TargetGenericBoxHeapMetadata<InProcess>;
 
 /// \brief The control structure of a generic or resilient protocol
 /// conformance.
@@ -2778,12 +2866,6 @@ public:
 using ProtocolConformanceRecord
   = TargetProtocolConformanceRecord<InProcess>;
 
-/// \brief Fetch a uniqued metadata object for a nominal type with
-/// resilient layout.
-SWIFT_RUNTIME_EXPORT
-extern "C" const Metadata *
-swift_getResilientMetadata(GenericMetadata *pattern);
-
 /// \brief Fetch a uniqued metadata object for a generic nominal type.
 ///
 /// The basic algorithm for fetching a metadata object is:
@@ -3028,11 +3110,16 @@ struct ClassFieldLayout {
 
 /// Initialize the field offset vector for a dependent-layout class, using the
 /// "Universal" layout strategy.
+///
+/// This will relocate the metadata if it doesn't have enough space
+/// for its superclass.  Note that swift_allocateGenericClassMetadata will
+/// never produce a metadata that requires relocation.
 SWIFT_RUNTIME_EXPORT
-extern "C" void swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
-                                      size_t numFields,
-                                      const ClassFieldLayout *fieldLayouts,
-                                      size_t *fieldOffsets);
+extern "C" ClassMetadata *
+swift_initClassMetadata_UniversalStrategy(ClassMetadata *self,
+                                          size_t numFields,
+                                          const ClassFieldLayout *fieldLayouts,
+                                          size_t *fieldOffsets);
 
 /// \brief Fetch a uniqued metadata for a metatype type.
 SWIFT_RUNTIME_EXPORT
@@ -3361,5 +3448,7 @@ std::string nameForMetadata(const Metadata *type,
                             bool qualified = true);
 
 } // end namespace swift
+
+#pragma clang diagnostic pop
 
 #endif /* SWIFT_RUNTIME_METADATA_H */

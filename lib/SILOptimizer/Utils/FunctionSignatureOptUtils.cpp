@@ -15,10 +15,39 @@
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SIL/SILModule.h"
 #include "swift/SIL/SILValue.h"
+#include "swift/SIL/DebugUtils.h"
 #include "swift/SILOptimizer/Utils/FunctionSignatureOptUtils.h"
 #include "swift/SILOptimizer/Utils/Local.h"
+#include "swift/SIL/Mangle.h"
 
 using namespace swift;
+
+bool swift::hasNonTrivialNonDebugUse(SILArgument *Arg) {
+  llvm::SmallVector<SILInstruction *, 8> Worklist;
+  llvm::SmallPtrSet<SILInstruction *, 8> SeenInsts;
+
+  for (Operand *I : getNonDebugUses(SILValue(Arg)))
+    Worklist.push_back(I->getUser());
+
+  while (!Worklist.empty()) {
+    SILInstruction *U = Worklist.pop_back_val();
+    if (!SeenInsts.insert(U).second)
+      continue;
+
+    // If U is a terminator inst, return false.
+    if (isa<TermInst>(U))
+      return true;
+
+    // If U has side effects...
+    if (U->mayHaveSideEffects()) 
+      return true;
+
+    // Otherwise add all non-debug uses of I to the worklist.
+    for (Operand *I : getNonDebugUses(SILValue(U)))
+      Worklist.push_back(I->getUser());
+  }
+  return false;
+}
 
 static bool isSpecializableRepresentation(SILFunctionTypeRepresentation Rep) {
   switch (Rep) {
@@ -40,6 +69,10 @@ bool swift::canSpecializeFunction(SILFunction *F) {
   // Do not specialize the signature of SILFunctions that are external
   // declarations since there is no body to optimize.
   if (F->isExternalDeclaration())
+    return false;
+
+  // For now ignore functions with indirect results.
+  if (F->getLoweredFunctionType()->hasIndirectResults())
     return false;
 
   // Do not specialize functions that are available externally. If an external
@@ -66,66 +99,3 @@ bool swift::canSpecializeFunction(SILFunction *F) {
   return true;
 }
 
-void swift::
-addReleasesForConvertedOwnedParameter(SILBuilder &Builder,
-                                      SILLocation Loc,
-                                      ArrayRef<SILArgument*> Parameters,
-                                      ArrayRef<ArgumentDescriptor> &ArgDescs) {
-  // If we have any arguments that were consumed but are now guaranteed,
-  // insert a release_value.
-  for (auto &ArgDesc : ArgDescs) {
-    if (ArgDesc.CalleeRelease.empty())
-      continue;
-    Builder.createReleaseValue(Loc, Parameters[ArgDesc.Index]);
-  }
-}
-
-void swift::
-addReleasesForConvertedOwnedParameter(SILBuilder &Builder,
-                                      SILLocation Loc,
-                                      OperandValueArrayRef Parameters,
-                                      ArrayRef<ArgumentDescriptor> &ArgDescs) {
-  // If we have any arguments that were consumed but are now guaranteed,
-  // insert a release_value.
-  for (auto &ArgDesc : ArgDescs) {
-    // The argument is dead. Make sure we have a release to balance out
-    // the retain for creating the @owned parameter.
-    if (ArgDesc.IsEntirelyDead && 
-        ArgDesc.Arg->getKnownParameterInfo().getConvention() ==
-        ParameterConvention::Direct_Owned) {
-       Builder.createReleaseValue(Loc, Parameters[ArgDesc.Index]);
-       continue;
-    }
-    if (ArgDesc.CalleeRelease.empty())
-      continue;
-    Builder.createReleaseValue(Loc, Parameters[ArgDesc.Index]);
-  }
-}
-
-void swift::
-addRetainsForConvertedDirectResults(SILBuilder &Builder,
-                                    SILLocation Loc,
-                                    SILValue ReturnValue,
-                                    SILInstruction *AI,
-                                    ArrayRef<ResultDescriptor> DirectResults) {
-  for (auto I : indices(DirectResults)) {
-    auto &RV = DirectResults[I];
-    if (RV.CalleeRetain.empty()) continue;
-
-    bool IsSelfRecursionEpilogueRetain = false;
-    for (auto &X : RV.CalleeRetain) {
-      IsSelfRecursionEpilogueRetain |= (AI == X);
-    }
-
-    // We do not create a retain if this ApplyInst is a self-recursion.
-    if (IsSelfRecursionEpilogueRetain)
-      continue;
-
-    // Extract the return value if necessary.
-    SILValue SpecificResultValue = ReturnValue;
-    if (DirectResults.size() != 1)
-      SpecificResultValue = Builder.createTupleExtract(Loc, ReturnValue, I);
-
-    Builder.createRetainValue(Loc, SpecificResultValue);
-  }
-}

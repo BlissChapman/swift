@@ -13,56 +13,62 @@
 import SwiftPrivate
 #if os(OSX) || os(iOS) || os(watchOS) || os(tvOS)
 import Darwin
-#elseif os(Linux) || os(FreeBSD)
+#elseif os(Linux) || os(FreeBSD) || os(PS4) || os(Android)
 import Glibc
 #endif
 
-public func _stdlib_mkstemps(template: inout String, _ suffixlen: CInt) -> CInt {
+#if !os(Windows) || CYGWIN
+public func _stdlib_mkstemps(_ template: inout String, _ suffixlen: CInt) -> CInt {
+#if os(Android)
+  preconditionFailure("mkstemps doesn't work on Android")
+#else
   var utf8 = template.nulTerminatedUTF8
   let (fd, fileName) = utf8.withUnsafeMutableBufferPointer {
     (utf8) -> (CInt, String) in
-    let fd = mkstemps(UnsafeMutablePointer(utf8.baseAddress), suffixlen)
-    let fileName = String(cString: UnsafePointer(utf8.baseAddress))
+    let fd = mkstemps(UnsafeMutablePointer(utf8.baseAddress!), suffixlen)
+    let fileName = String(cString: utf8.baseAddress!)
     return (fd, fileName)
   }
   template = fileName
   return fd
+#endif
 }
+#endif
 
 public var _stdlib_FD_SETSIZE: CInt {
   return 1024
 }
 
 public struct _stdlib_fd_set {
-  var _data: [UInt32]
+  var _data: [UInt]
   static var _wordBits: Int {
-    return sizeof(UInt32) * 8
+    return sizeof(UInt.self) * 8
   }
 
   public init() {
-    _data = [UInt32](
+    _data = [UInt](
       repeating: 0,
       count: Int(_stdlib_FD_SETSIZE) / _stdlib_fd_set._wordBits)
   }
 
-  public func isset(fd: CInt) -> Bool {
+  public func isset(_ fd: CInt) -> Bool {
     let fdInt = Int(fd)
     return (
         _data[fdInt / _stdlib_fd_set._wordBits] &
-          UInt32(1 << (fdInt % _stdlib_fd_set._wordBits))
+          UInt(1 << (fdInt % _stdlib_fd_set._wordBits))
       ) != 0
   }
 
-  public mutating func set(fd: CInt) {
+  public mutating func set(_ fd: CInt) {
     let fdInt = Int(fd)
     _data[fdInt / _stdlib_fd_set._wordBits] |=
-      UInt32(1 << (fdInt % _stdlib_fd_set._wordBits))
+      UInt(1 << (fdInt % _stdlib_fd_set._wordBits))
   }
 
-  public mutating func clear(fd: CInt) {
+  public mutating func clear(_ fd: CInt) {
     let fdInt = Int(fd)
     _data[fdInt / _stdlib_fd_set._wordBits] &=
-      ~UInt32(1 << (fdInt % _stdlib_fd_set._wordBits))
+      ~UInt(1 << (fdInt % _stdlib_fd_set._wordBits))
   }
 
   public mutating func zero() {
@@ -77,9 +83,10 @@ public struct _stdlib_fd_set {
   }
 }
 
+#if !os(Windows) || CYGWIN
 public func _stdlib_select(
-  readfds: inout _stdlib_fd_set, _ writefds: inout _stdlib_fd_set,
-  _ errorfds: inout _stdlib_fd_set, _ timeout: UnsafeMutablePointer<timeval>
+  _ readfds: inout _stdlib_fd_set, _ writefds: inout _stdlib_fd_set,
+  _ errorfds: inout _stdlib_fd_set, _ timeout: UnsafeMutablePointer<timeval>?
 ) -> CInt {
   return readfds._data.withUnsafeMutableBufferPointer {
     (readfds) in
@@ -100,11 +107,12 @@ public func _stdlib_select(
     }
   }
 }
+#endif
 
 //
 // Functions missing in `Darwin` module.
 //
-public func _WSTATUS(status: CInt) -> CInt {
+public func _WSTATUS(_ status: CInt) -> CInt {
   return status & 0x7f
 }
 
@@ -112,18 +120,18 @@ public var _WSTOPPED: CInt {
   return 0x7f
 }
 
-public func WIFEXITED(status: CInt) -> Bool {
+public func WIFEXITED(_ status: CInt) -> Bool {
   return _WSTATUS(status) == 0
 }
 
-public func WIFSIGNALED(status: CInt) -> Bool {
+public func WIFSIGNALED(_ status: CInt) -> Bool {
   return _WSTATUS(status) != _WSTOPPED && _WSTATUS(status) != 0
 }
 
-public func WEXITSTATUS(status: CInt) -> CInt {
+public func WEXITSTATUS(_ status: CInt) -> CInt {
   return (status >> 8) & 0xff
 }
 
-public func WTERMSIG(status: CInt) -> CInt {
+public func WTERMSIG(_ status: CInt) -> CInt {
   return _WSTATUS(status)
 }

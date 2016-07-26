@@ -10,12 +10,59 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// `Character` represents some Unicode grapheme cluster as
-/// defined by a canonical, localized, or otherwise tailored
-/// segmentation algorithm.
+/// A single extended grapheme cluster, which approximates a user-perceived
+/// character.
+///
+/// The `Character` type represents a character made up of one or more Unicode
+/// scalar values, grouped by a Unicode boundary algorithm. Generally, a
+/// `Character` instance matches what the reader of a string will perceive as
+/// a single character. The number of visible characters is generally the most
+/// natural way to count the length of a string.
+///
+///     let greeting = "Hello! 🐥"
+///     print("Character count: \(greeting.characters.count)")
+///     // Prints "Character count: 8"
+///
+/// Because each character in a string can be made up of one or more Unicode
+/// code points, the number of characters in a string may not match the length
+/// of the Unicode code point representation or the length of the string in a
+/// particular binary representation.
+///
+///     print("Unicode code point count: \(greeting.unicodeScalars.count)")
+///     // Prints "Unicode code point count: 15"
+///
+///     print("UTF-8 representation count: \(greeting.utf8.count)")
+///     // Prints "UTF-8 representation count: 18"
+///
+/// Every `Character` instance is composed of one or more Unicode code points
+/// that are grouped together as an *extended grapheme cluster*. The way these
+/// code points are grouped is defined by a canonical, localized, or otherwise
+/// tailored Unicode segmentation algorithm.
+///
+/// For example, a country's Unicode flag character is made up of two regional
+/// indicator code points that correspond to that country's ISO 3166-1 alpha-2
+/// code. The alpha-2 code for The United States is "US", so its flag
+/// character is made up of the Unicode code points `"\u{1F1FA}"` (REGIONAL
+/// INDICATOR SYMBOL LETTER U) and `"\u{1F1F8}"` (REGIONAL INDICATOR SYMBOL
+/// LETTER S). When placed next to each other in a Swift string literal, these
+/// two code points are combined into a single grapheme cluster, represented
+/// by a `Character` instance in Swift.
+///
+///     let usFlag: Character = "\u{1F1FA}\u{1F1F8}"
+///     print(usFlag)
+///     // Prints "🇺🇸"
+///
+/// For more information about the Unicode terms used in this discussion, see
+/// the [Unicode.org glossary][glossary]. In particular, this discussion
+/// mentions [extended grapheme clusters][clusters] and [Unicode scalar
+/// values][scalars].
+///
+/// [glossary]: http://www.unicode.org/glossary/
+/// [clusters]: http://www.unicode.org/glossary/#extended_grapheme_cluster
+/// [scalars]: http://www.unicode.org/glossary/#unicode_scalar_value
 public struct Character :
-  _BuiltinExtendedGraphemeClusterLiteralConvertible,
-  ExtendedGraphemeClusterLiteralConvertible, Equatable, Hashable, Comparable {
+  _ExpressibleByBuiltinExtendedGraphemeClusterLiteral,
+  ExpressibleByExtendedGraphemeClusterLiteral, Hashable {
 
   // Fundamentally, it is just a String, but it is optimized for the
   // common case where the UTF-8 representation fits in 63 bits.  The
@@ -25,6 +72,7 @@ public struct Character :
   //
   // If the grapheme cluster can be represented as `.small`, it
   // should be represented as such.
+  @_versioned
   internal enum Representation {
     // A _StringBuffer whose first grapheme cluster is self.
     // NOTE: may be more than 1 Character long.
@@ -32,7 +80,9 @@ public struct Character :
     case small(Builtin.Int63)
   }
 
-  /// Construct a `Character` containing just the given `scalar`.
+  /// Creates a character containing the given Unicode scalar value.
+  ///
+  /// - Parameter scalar: The Unicode scalar value to convert into a character.
   public init(_ scalar: UnicodeScalar) {
     var asInt: UInt64 = 0
     var shift: UInt64 = 0
@@ -42,7 +92,7 @@ public struct Character :
       shift += 8
     }
 
-    UTF8.encode(scalar, sendingOutputTo: output)
+    UTF8.encode(scalar, into: output)
     asInt |= (~0) << shift
     _representation = .small(Builtin.trunc_Int64_Int63(asInt._value))
   }
@@ -54,7 +104,17 @@ public struct Character :
         UTF32.self, input: CollectionOfOne(UInt32(value))))
   }
 
-  /// Create an instance initialized to `value`.
+  /// Creates a character with the specified value.
+  ///
+  /// Don't call this initializer directly. It is used by the compiler when you
+  /// use a string literal to initialize a `Character` instance. For example:
+  ///
+  ///     let snowflake: Character = "❄︎"
+  ///     print(snowflake)
+  ///     // Prints "❄︎"
+  ///
+  /// The assignment to the `snowflake` constant calls this initializer behind
+  /// the scenes.
   public init(unicodeScalarLiteral value: Character) {
     self = value
   }
@@ -72,14 +132,31 @@ public struct Character :
         isASCII: isASCII))
   }
 
-  /// Create an instance initialized to `value`.
+  /// Creates a character with the specified value.
+  ///
+  /// Don't call this initializer directly. It is used by the compiler when you
+  /// use a string literal to initialize a `Character` instance. For example:
+  ///
+  ///     let oBreve: Character = "o\u{306}"
+  ///     print(oBreve)
+  ///     // Prints "ŏ"
+  ///
+  /// The assignment to the `oBreve` constant calls this initializer behind the
+  /// scenes.
   public init(extendedGraphemeClusterLiteral value: Character) {
     self = value
   }
 
-  /// Create an instance from a single-character `String`.
+  /// Creates a character from a single-character string.
   ///
-  /// - Precondition: `s` contains exactly one extended grapheme cluster.
+  /// The following example creates a new character from the uppercase version
+  /// of a string that only holds one character.
+  ///
+  ///     let a = "a"
+  ///     let capitalA = Character(a.uppercased())
+  ///
+  /// - Parameter s: The single-character string to convert to a `Character`
+  ///   instance. `s` must contain exactly one extended grapheme cluster.
   public init(_ s: String) {
     // The small representation can accept up to 8 code units as long
     // as the last one is a continuation.  Since the high bit of the
@@ -93,7 +170,7 @@ public struct Character :
     _precondition(
       s._core.count != 0, "Can't form a Character from an empty String")
     _precondition(
-      s.startIndex.successor() == s.endIndex,
+      s.index(after: s.startIndex) == s.endIndex,
       "Can't form a Character from a String containing more than one extended grapheme cluster")
 
     let (count, initialUTF8) = s._core._encodeSomeUTF8(from: 0)
@@ -105,8 +182,8 @@ public struct Character :
       _representation = .small(Builtin.trunc_Int64_Int63(initialUTF8._value))
     }
     else {
-      if let native = s._core.nativeBuffer
-              where native.start == UnsafeMutablePointer(s._core._baseAddress) {
+      if let native = s._core.nativeBuffer,
+         native.start == UnsafeMutablePointer(s._core._baseAddress!) {
         _representation = .large(native._storage)
         return
       }
@@ -118,8 +195,7 @@ public struct Character :
 
   /// Returns the index of the lowest byte that is 0xFF, or 8 if
   /// there is none.
-  @warn_unused_result
-  static func _smallSize(value: UInt64) -> Int {
+  static func _smallSize(_ value: UInt64) -> Int {
     var mask: UInt64 = 0xFF
     for i in 0..<8 {
       if (value & mask) == mask {
@@ -130,12 +206,17 @@ public struct Character :
     return 8
   }
 
-  @warn_unused_result
-  static func _smallValue(value: Builtin.Int63) -> UInt64 {
+  static func _smallValue(_ value: Builtin.Int63) -> UInt64 {
     return UInt64(Builtin.zext_Int63_Int64(value)) | (1<<63)
   }
 
-  internal struct _SmallUTF8 : Collection {
+  internal struct _SmallUTF8 : RandomAccessCollection {
+    typealias Indices = CountableRange<Int>
+    
+    var indices: CountableRange<Int> {
+      return startIndex..<endIndex
+    }
+
     init(_ u8: UInt64) {
       let utf8Count = Character._smallSize(u8)
       _sanityCheck(utf8Count <= 8, "Character with more than 8 UTF-8 code units")
@@ -154,7 +235,7 @@ public struct Character :
     ///
     /// `endIndex` is not a valid argument to `subscript`, and is always
     /// reachable from `startIndex` by zero or more applications of
-    /// `successor()`.
+    /// `index(after:)`.
     var endIndex: Int {
       return Int(count)
     }
@@ -197,7 +278,9 @@ public struct Character :
     var data: UInt64
   }
 
-  struct _SmallUTF16 : Collection {
+  struct _SmallUTF16 : RandomAccessCollection {
+    typealias Indices = CountableRange<Int>
+    
     init(_ u8: UInt64) {
       let count = UTF16.transcodedLength(
         of: _SmallUTF8(u8).makeIterator(),
@@ -210,18 +293,18 @@ public struct Character :
         u16 = u16 << 16
         u16 = u16 | UInt64($0)
       }
-      transcode(
+      _ = transcode(
         _SmallUTF8(u8).makeIterator(),
         from: UTF8.self, to: UTF16.self,
         stoppingOnError: false,
-        sendingOutputTo: output)
+        into: output)
       self.data = u16
     }
 
     /// The position of the first element in a non-empty collection.
     ///
     /// In an empty collection, `startIndex == endIndex`.
-    var startIndex : Int {
+    var startIndex: Int {
       return 0
     }
 
@@ -230,7 +313,7 @@ public struct Character :
     /// `endIndex` is not a valid argument to `subscript`, and is always
     /// reachable from `startIndex` by zero or more applications of
     /// `successor()`.
-    var endIndex : Int {
+    var endIndex: Int {
       return Int(count)
     }
 
@@ -251,13 +334,10 @@ public struct Character :
     var data: UInt64
   }
 
-  /// The hash value.
+  /// The character's hash value.
   ///
-  /// **Axiom:** `x == y` implies `x.hashValue == y.hashValue`.
-  ///
-  /// - Note: The hash value is not guaranteed to be stable across
-  ///   different invocations of the same program.  Do not persist the
-  ///   hash value across program runs.
+  /// Hash values are not guaranteed to be equal across different executions of
+  /// your program. Do not save hash values to use during a future execution.
   public var hashValue: Int {
     // FIXME(performance): constructing a temporary string is extremely
     // wasteful and inefficient.
@@ -269,18 +349,21 @@ public struct Character :
     return String(self).utf16
   }
 
+  @_versioned
   internal var _representation: Representation
 }
 
 extension Character : CustomDebugStringConvertible {
-  /// A textual representation of `self`, suitable for debugging.
+  /// A textual representation of the character, suitable for debugging.
   public var debugDescription: String {
     return String(self).debugDescription
   }
 }
 
 extension String {
-  /// Construct an instance containing just the given `Character`.
+  /// Creates a string containing the given character.
+  ///
+  /// - Parameter c: The character to convert to a string.
   public init(_ c: Character) {
     switch c._representation {
     case let .small(_63bits):
@@ -290,7 +373,7 @@ extension String {
         UTF8.self, input: smallUTF8)
     case let .large(value):
       let buf = String(_StringCore(_StringBuffer(value)))
-      self = buf[buf.startIndex..<buf.startIndex.successor()]
+      self = buf[buf.startIndex..<buf.index(after: buf.startIndex)]
     }
   }
 }
@@ -308,32 +391,35 @@ internal var _minASCIICharReprBuiltin: Builtin.Int63 {
   }
 }
 
-@warn_unused_result
-public func ==(lhs: Character, rhs: Character) -> Bool {
-  switch (lhs._representation, rhs._representation) {
-  case let (.small(lbits), .small(rbits)) where
-    Bool(Builtin.cmp_uge_Int63(lbits, _minASCIICharReprBuiltin))
-    && Bool(Builtin.cmp_uge_Int63(rbits, _minASCIICharReprBuiltin)):
-    return Bool(Builtin.cmp_eq_Int63(lbits, rbits))
-  default:
-    // FIXME(performance): constructing two temporary strings is extremely
-    // wasteful and inefficient.
-    return String(lhs) == String(rhs)
+extension Character : Equatable {
+  public static func == (lhs: Character, rhs: Character) -> Bool {
+    switch (lhs._representation, rhs._representation) {
+    case let (.small(lbits), .small(rbits)) where
+      Bool(Builtin.cmp_uge_Int63(lbits, _minASCIICharReprBuiltin))
+      && Bool(Builtin.cmp_uge_Int63(rbits, _minASCIICharReprBuiltin)):
+      return Bool(Builtin.cmp_eq_Int63(lbits, rbits))
+    default:
+      // FIXME(performance): constructing two temporary strings is extremely
+      // wasteful and inefficient.
+      return String(lhs) == String(rhs)
+    }
   }
 }
 
-@warn_unused_result
-public func <(lhs: Character, rhs: Character) -> Bool {
-  switch (lhs._representation, rhs._representation) {
-  case let (.small(lbits), .small(rbits)) where
-    // Note: This is consistent with Foundation but unicode incorrect.
-    // See String._compareASCII.
-    Bool(Builtin.cmp_uge_Int63(lbits, _minASCIICharReprBuiltin))
-    && Bool(Builtin.cmp_uge_Int63(rbits, _minASCIICharReprBuiltin)):
-    return Bool(Builtin.cmp_ult_Int63(lbits, rbits))
-  default:
-    // FIXME(performance): constructing two temporary strings is extremely
-    // wasteful and inefficient.
-    return String(lhs) < String(rhs)
+extension Character : Comparable {
+  public static func < (lhs: Character, rhs: Character) -> Bool {
+    switch (lhs._representation, rhs._representation) {
+    case let (.small(lbits), .small(rbits)) where
+      // Note: This is consistent with Foundation but unicode incorrect.
+      // See String._compareASCII.
+      Bool(Builtin.cmp_uge_Int63(lbits, _minASCIICharReprBuiltin))
+      && Bool(Builtin.cmp_uge_Int63(rbits, _minASCIICharReprBuiltin)):
+      return Bool(Builtin.cmp_ult_Int63(lbits, rbits))
+    default:
+      // FIXME(performance): constructing two temporary strings is extremely
+      // wasteful and inefficient.
+      return String(lhs) < String(rhs)
+    }
   }
 }
+

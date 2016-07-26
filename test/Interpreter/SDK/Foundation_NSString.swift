@@ -13,7 +13,7 @@ print(hello)
 var helloStr: String = hello as String
 print(String(helloStr._core[NSRange(location: 1, length: 5).toRange()!]))
 
-var upperHello = hello.uppercase
+var upperHello = hello.uppercased
 // CHECK: HELLO, WORLD!
 print(upperHello)
 
@@ -49,7 +49,7 @@ assert(!NSString.instancesRespond(to: "wobble"))
 var array2 : NSArray = [hello, hello]
 
 // Switch on strings
-switch ("world" as NSString).uppercase {
+switch ("world" as NSString).uppercased {
 case "WORLD":
   print("Found it\n", terminator: "")
 
@@ -140,7 +140,7 @@ print(NSString(format: "%@ %@", "x", "y"))
 // CHECK-NEXT: 1{{.*}}024,25
 print(NSString(
   format: "%g",
-  locale: NSLocale(localeIdentifier: "fr_FR"),
+  locale: Locale(identifier: "fr_FR"),
   1024.25
 ))
 // CHECK-NEXT: x y z

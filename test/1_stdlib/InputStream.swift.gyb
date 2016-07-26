@@ -10,29 +10,21 @@
 //
 //===----------------------------------------------------------------------===//
 // -*- swift -*-
-// RUN: rm -rf %t ; mkdir -p %t
-// RUN: %S/../../utils/gyb %s -o %t/InputStream.swift
-// RUN: %S/../../utils/line-directive %t/InputStream.swift -- %target-build-swift %t/InputStream.swift -o %t/a.out
-// RUN: %S/../../utils/line-directive %t/InputStream.swift -- %target-run %t/a.out
+// RUN: %target-run-simple-swiftgyb
 // REQUIRES: executable_test
 
-// XFAIL: interpret
+// FIXME: The Android test runner is incapable of running this test, which
+//        relies on stdin input.
+// UNSUPPORTED: OS=linux-androideabi
 
 import StdlibUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-import SwiftPrivate
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 import Swift
 
 var ReadLineTestSuite = TestSuite("ReadLine")
 
-% for strip_newline in [ 'false', 'true' ]:
+% for strip_newline in ['false', 'true']:
 %   newline = '' if strip_newline == 'true' else '\\n'
 
 ReadLineTestSuite.test("EmptyLine/strippingNewline=${strip_newline}")

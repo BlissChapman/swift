@@ -6,13 +6,6 @@ import IOKit
 import IOKit.hid
 import StdlibUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-import SwiftPrivate
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 var IOKitTests = TestSuite("IOKit")
 
@@ -23,7 +16,7 @@ IOKitTests.test("IOReturn value") {
 }
 
 IOKitTests.test("IOReturn type") {
-  let manager = IOHIDManagerCreate(nil, 0)!.takeRetainedValue()
+  let manager = IOHIDManagerCreate(nil, 0)
   let result = IOHIDManagerClose(manager, 0)
   expectTrue(result.dynamicType == kIOReturnNotOpen.dynamicType)
 }

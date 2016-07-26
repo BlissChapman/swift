@@ -63,8 +63,8 @@ print("ObjC quick look objects:")
 // CHECK-LABEL: ObjC enums:
 print("ObjC enums:")
 
-// CHECK-NEXT: We cannot reflect NSComparisonResult yet
-print("We cannot reflect \(NSComparisonResult.orderedAscending) yet")
+// CHECK-NEXT: We cannot reflect ComparisonResult yet
+print("We cannot reflect \(ComparisonResult.orderedAscending) yet")
 
 // Don't crash when introspecting framework types such as NSURL.
 // <rdar://problem/16592777>
@@ -94,9 +94,9 @@ switch PlaygroundQuickLook(reflecting: somesubclassofnsstring) {
 
 // CHECK-NEXT: got the expected quick look attributed string
 let astr = NSAttributedString(string: "yizzle pizzle")
-switch PlaygroundQuickLook(reflecting: astr as NSAttributedString) {
+switch PlaygroundQuickLook(reflecting: astr) {
 case .attributedString(let astr2 as NSAttributedString)
-where astr === astr2:
+where astr == astr2:
   print("got the expected quick look attributed string")
 case _:
   print("got something else")
@@ -111,7 +111,7 @@ case _:
 }
 
 // CHECK-NEXT: got the expected quick look uint
-switch PlaygroundQuickLook(reflecting: NSNumber(unsignedLongLong: UInt64.max)) {
+switch PlaygroundQuickLook(reflecting: NSNumber(value: UInt64.max)) {
 case .uInt(UInt64.max):
   print("got the expected quick look uint")
 case _:
@@ -138,7 +138,7 @@ case _:
 // CHECK-NEXT: got the expected quick look color
 // CHECK-NEXT: got the expected quick look bezier path
 
-let image = OSImage(contentsOfFile:Process.arguments[1])!
+let image = OSImage(contentsOfFile:CommandLine.arguments[1])!
 switch PlaygroundQuickLook(reflecting: image) {
 case .image(let image2 as OSImage) where image === image2:
   print("got the expected quick look image")
@@ -235,7 +235,7 @@ class HasDebugQLO : CanaryBase {
 
 class HasNumberQLO : CanaryBase {
   @objc var debugQuickLookObject: AnyObject {
-    let number = NSNumber(integer: 97210)
+    let number = NSNumber(value: 97210)
     return number
   }
 }
@@ -258,7 +258,7 @@ class HasStringQLO : CanaryBase {
   }
 }
 
-func testQLO<T : CanaryBase>(type: T.Type) {
+func testQLO<T : CanaryBase>(_ type: T.Type) {
   autoreleasepool {
     _ = PlaygroundQuickLook(reflecting: type.init())
   }

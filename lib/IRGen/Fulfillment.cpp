@@ -129,8 +129,8 @@ bool FulfillmentMap::searchTypeMetadata(IRGenModule &IGM, CanType type,
     return searchNominalTypeMetadata(IGM, nomTy, source, std::move(path), keys);
   }
   if (auto boundTy = dyn_cast<BoundGenericType>(type)) {
-    return searchBoundGenericTypeMetadata(IGM, boundTy, source, std::move(path),
-                                          keys);
+    return searchBoundGenericTypeMetadata(IGM, boundTy, source,
+                                          std::move(path), keys);
   }
 
   // TODO: tuples
@@ -203,7 +203,9 @@ bool FulfillmentMap::searchWitnessTable(IRGenModule &IGM,
 }
 
 
-bool FulfillmentMap::searchParentTypeMetadata(IRGenModule &IGM, CanType parent,
+bool FulfillmentMap::searchParentTypeMetadata(IRGenModule &IGM,
+                                              NominalTypeDecl *decl,
+                                              CanType parent,
                                               unsigned source,
                                               MetadataPath &&path,
                                         const InterestingKeysCallback &keys) {
@@ -212,7 +214,7 @@ bool FulfillmentMap::searchParentTypeMetadata(IRGenModule &IGM, CanType parent,
 
   // If we do, it has to be nominal one way or another.
   path.addNominalParentComponent();
-  return searchTypeMetadata(IGM, parent, IsExact, source, std::move(path), keys);
+  return searchTypeMetadata(IGM, parent, IsExact, source, std::move(path),keys);
 }
 
 bool FulfillmentMap::searchNominalTypeMetadata(IRGenModule &IGM,
@@ -222,7 +224,7 @@ bool FulfillmentMap::searchNominalTypeMetadata(IRGenModule &IGM,
                                          const InterestingKeysCallback &keys) {
   // Nominal types add no generic arguments themselves, but they
   // may have the arguments of their parents.
-  return searchParentTypeMetadata(IGM, type.getParent(),
+  return searchParentTypeMetadata(IGM, type->getDecl(), type.getParent(),
                                   source, std::move(path), keys);
 }
 
@@ -231,13 +233,19 @@ bool FulfillmentMap::searchBoundGenericTypeMetadata(IRGenModule &IGM,
                                                     unsigned source,
                                                     MetadataPath &&path,
                                          const InterestingKeysCallback &keys) {
+  // Objective-C generics don't preserve their generic parameters at runtime,
+  // so they aren't able to fulfill type metadata requirements.
+  if (type->getDecl()->hasClangNode()) {
+    return false;
+  }
+  
   bool hadFulfillment = false;
 
   GenericTypeRequirements requirements(IGM, type->getDecl());
-  requirements.enumerateFulfillments(IGM,
-                  type->getSubstitutions(IGM.getSwiftModule(), nullptr),
-                                [&](unsigned reqtIndex, CanType arg,
-                                    Optional<ProtocolConformanceRef> conf) {
+  requirements.enumerateFulfillments(
+      IGM, type->gatherAllSubstitutions(IGM.getSwiftModule(), nullptr),
+      [&](unsigned reqtIndex, CanType arg,
+          Optional<ProtocolConformanceRef> conf) {
     // Skip uninteresting type arguments.
     if (!keys.hasInterestingType(arg))
       return;
@@ -283,7 +291,8 @@ bool FulfillmentMap::searchBoundGenericTypeMetadata(IRGenModule &IGM,
 
   // Also match against the parent.  The polymorphic type
   // will start with any arguments from the parent.
-  hadFulfillment |= searchParentTypeMetadata(IGM, type.getParent(),
+  hadFulfillment |= searchParentTypeMetadata(IGM, type->getDecl(),
+                                             type.getParent(),
                                              source, std::move(path), keys);
   return hadFulfillment;
 }

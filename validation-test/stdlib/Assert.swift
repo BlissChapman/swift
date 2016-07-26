@@ -11,14 +11,6 @@
 
 import StdlibUnittest
 
-// Also import modules which are used by StdlibUnittest internally. This
-// workaround is needed to link all required libraries in case we compile
-// StdlibUnittest with -sil-serialize-all.
-import SwiftPrivate
-import SwiftPrivatePthreadExtras
-#if _runtime(_ObjC)
-import ObjectiveC
-#endif
 
 
 //===---
@@ -27,7 +19,7 @@ import ObjectiveC
 
 func testTrapsAreNoreturn(i: Int) -> Int {
   // Don't need a return statement in 'case' statements because these functions
-  // are @noreturn.
+  // never return.
   switch i {
   case 2:
     preconditionFailure("cannot happen")
@@ -153,6 +145,10 @@ Assert.test("fatalError/StringInterpolation")
   expectCrashLater()
   fatalError("this \(should) fail")
 }
+
+// FIXME: swift-3-indexing-model: add tests for fatalError() that use non-ASCII
+// characters, and that use NSString-backed String.
+// We had to rewrite a part of fatalError() in the indexing effort.
 
 Assert.test("_precondition")
   .xfail(.custom(

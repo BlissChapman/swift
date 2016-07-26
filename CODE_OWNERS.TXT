@@ -5,8 +5,7 @@ what goes in or not.
 
 The list is sorted by surname and formatted to allow easy grepping and
 beautification by scripts.  The fields are: name (N), email (E), web-address
-(W), PGP key ID and fingerprint (P), description (D), and snail-mail address
-(S).
+(W), description (D).
 
 N: David Abrahams
 E: dabrahams@apple.com
@@ -39,10 +38,6 @@ D: Everything in Swift not covered by someone else
 N: John McCall
 E: rjmccall@apple.com
 D: Demangler, IRGen, Runtime
-
-N: Joe Pamer
-E: jpamer@apple.com
-D: Expression type checker (Sema/ConstraintSystem)
 
 N: Jordan Rose
 E: jordan_rose@apple.com

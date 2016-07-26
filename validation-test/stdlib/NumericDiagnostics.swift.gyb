@@ -1,9 +1,9 @@
-// RUN: rm -rf %t && mkdir -p %t && %S/../../utils/gyb %s -o %t/main.swift
-// RUN: %S/../../utils/line-directive %t/main.swift -- %target-build-swift -parse -Xfrontend -verify %t/main.swift
+// RUN: rm -rf %t && mkdir -p %t && %gyb %s -o %t/main.swift
+// RUN: %line-directive %t/main.swift -- %target-build-swift -parse -Xfrontend -verify %t/main.swift
 // REQUIRES: executable_test
 
 % from SwiftIntTypes import all_numeric_type_names, numeric_type_names_macintosh_only, \
-%   all_integer_type_names,all_integer_binary_operator_names, all_integer_or_real_binary_operator_names, \
+%   all_integer_type_names, all_integer_binary_operator_names, all_integer_or_real_binary_operator_names, \
 %   all_arithmetic_comparison_operator_names, all_integer_assignment_operator_names, \
 %   all_integer_or_real_assignment_operator_names
 

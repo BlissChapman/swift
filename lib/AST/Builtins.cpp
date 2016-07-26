@@ -159,10 +159,16 @@ getBuiltinFunction(Identifier Id, ArrayRef<Type> argTypes, Type ResType,
   auto *paramList = ParameterList::create(Context, params);
   
   DeclName Name(Context, Id, paramList);
-  auto FD = FuncDecl::create(Context, SourceLoc(), StaticSpellingKind::None,
-                          SourceLoc(), Name, SourceLoc(), SourceLoc(),
-                          SourceLoc(), /*GenericParams=*/nullptr, FnType,
-                          paramList, TypeLoc::withoutLoc(ResType), DC);
+  auto FD = FuncDecl::create(Context, /*StaticLoc=*/SourceLoc(),
+                             StaticSpellingKind::None,
+                             /*FuncLoc=*/SourceLoc(),
+                             Name, /*NameLoc=*/SourceLoc(),
+                             /*Throws=*/false, /*ThrowsLoc=*/SourceLoc(),
+                             /*AccessorKeywordLoc=*/SourceLoc(),
+                             /*GenericParams=*/nullptr,
+                             paramList, FnType,
+                             TypeLoc::withoutLoc(ResType), DC);
+  FD->setInterfaceType(FnType);
   FD->setImplicit();
   FD->setAccessibility(Accessibility::Public);
   return FD;
@@ -194,7 +200,6 @@ getBuiltinGenericFunction(Identifier Id,
     requirements.push_back(Requirement(RequirementKind::WitnessMarker,
                                        param, Type()));
   }
-  
   GenericSignature *Sig = GenericSignature::get(GenericParamTypes,requirements);
   
   Type InterfaceType = GenericFunctionType::get(Sig,
@@ -221,10 +226,13 @@ getBuiltinGenericFunction(Identifier Id,
                                              ResBodyType, GenericParams, Info);
   
   DeclName Name(Context, Id, paramList);
-  auto func = FuncDecl::create(Context, SourceLoc(), StaticSpellingKind::None,
-                               SourceLoc(), Name,
-                               SourceLoc(), SourceLoc(), SourceLoc(),
-                               GenericParams, FnType, paramList,
+  auto func = FuncDecl::create(Context, /*StaticLoc=*/SourceLoc(),
+                               StaticSpellingKind::None,
+                               /*FuncLoc=*/SourceLoc(),
+                               Name, /*NameLoc=*/SourceLoc(),
+                               /*Throws=*/false, /*ThrowsLoc=*/SourceLoc(),
+                               /*AccessorKeywordLoc=*/SourceLoc(),
+                               GenericParams, paramList, FnType,
                                TypeLoc::withoutLoc(ResBodyType), DC);
     
   func->setInterfaceType(InterfaceType);
@@ -649,6 +657,15 @@ static ValueDecl *getIsUniqueOperation(ASTContext &Context, Identifier Id) {
   return builder.build(Id);
 }
 
+static ValueDecl *getBindMemoryOperation(ASTContext &Context, Identifier Id) {
+  GenericSignatureBuilder builder(Context);
+  builder.addParameter(makeConcrete(Context.TheRawPointerType));
+  builder.addParameter(makeConcrete(BuiltinIntegerType::getWordType(Context)));
+  builder.addParameter(makeMetatype(makeGenericParam()));
+  builder.setResult(makeConcrete(TupleType::getEmpty(Context)));
+  return builder.build(Id);
+}
+
 static ValueDecl *getSizeOrAlignOfOperation(ASTContext &Context,
                                             Identifier Id) {
   GenericSignatureBuilder builder(Context);
@@ -696,8 +713,7 @@ static ValueDecl *getVoidErrorOperation(ASTContext &Context, Identifier Id) {
 static ValueDecl *getUnexpectedErrorOperation(ASTContext &Context,
                                               Identifier Id) {
   return getBuiltinFunction(Id, {Context.getExceptionType()},
-                            TupleType::getEmpty(Context),
-                            AnyFunctionType::ExtInfo().withIsNoReturn());
+                            Context.getNeverType());
 }
 
 static ValueDecl *getCmpXChgOperation(ASTContext &Context, Identifier Id,
@@ -780,6 +796,27 @@ static ValueDecl *getCastFromBridgeObjectOperation(ASTContext &C,
   default:
     llvm_unreachable("not a cast from bridge object op");
   }
+}
+
+static ValueDecl *getUnsafeGuaranteed(ASTContext &C, Identifier Id) {
+  // <T : AnyObject> T -> (T, Int8Ty)
+  //
+  GenericSignatureBuilder builder(C);
+  auto T = makeGenericParam();
+  builder.addParameter(T);
+  Type Int8Ty = BuiltinIntegerType::get(8, C);
+  builder.setResult(makeTuple(T, makeConcrete(Int8Ty)));
+  return builder.build(Id);
+}
+
+static ValueDecl *getUnsafeGuaranteedEnd(ASTContext &C, Identifier Id) {
+  // Int8Ty -> ()
+  Type Int8Ty = BuiltinIntegerType::get(8, C);
+  return getBuiltinFunction(Id, { Int8Ty }, TupleType::getEmpty(C));
+}
+
+static ValueDecl *getOnFastPath(ASTContext &Context, Identifier Id) {
+  return getBuiltinFunction(Id, {}, TupleType::getEmpty(Context));
 }
 
 static ValueDecl *getCastReferenceOperation(ASTContext &ctx,
@@ -936,10 +973,8 @@ static ValueDecl *getIntToFPWithOverflowOperation(ASTContext &Context,
 
 static ValueDecl *getUnreachableOperation(ASTContext &Context,
                                           Identifier Id) {
-  // @noreturn () -> ()
-  auto VoidTy = Context.TheEmptyTupleType;
-  return getBuiltinFunction(Id, {}, VoidTy,
-                            AnyFunctionType::ExtInfo().withIsNoReturn(true));
+  // () -> Never
+  return getBuiltinFunction(Id, {}, Context.getNeverType());
 }
 
 static ValueDecl *getOnceOperation(ASTContext &Context,
@@ -949,7 +984,7 @@ static ValueDecl *getOnceOperation(ASTContext &Context,
   auto HandleTy = Context.TheRawPointerType;
   auto VoidTy = Context.TheEmptyTupleType;
   auto Thin = FunctionType::ExtInfo(FunctionTypeRepresentation::Thin,
-                                    /*noreturn*/ false, /*throws*/ false);
+                                    /*throws*/ false);
   
   auto BlockTy = FunctionType::get(VoidTy, VoidTy, Thin);
   return getBuiltinFunction(Id, {HandleTy, BlockTy}, VoidTy);
@@ -1154,7 +1189,7 @@ getSwiftFunctionTypeForIntrinsic(unsigned iid, ArrayRef<Type> TypeArgs,
   Info = FunctionType::ExtInfo();
   if (attrs.hasAttribute(llvm::AttributeSet::FunctionIndex,
                          llvm::Attribute::NoReturn))
-    Info = Info.withIsNoReturn(true);
+    ResultTy = Context.getNeverType();
   
   return true;
 }
@@ -1444,6 +1479,7 @@ ValueDecl *swift::getBuiltinValueDecl(ASTContext &Context, Identifier Id) {
     return getRefCountingOperation(Context, Id);
       
   case BuiltinValueKind::Load:
+  case BuiltinValueKind::LoadRaw:
   case BuiltinValueKind::Take:
     if (!Types.empty()) return nullptr;
     return getLoadOperation(Context, Id);
@@ -1473,6 +1509,10 @@ ValueDecl *swift::getBuiltinValueDecl(ASTContext &Context, Identifier Id) {
   case BuiltinValueKind::IsUniqueOrPinned_native:
     if (!Types.empty()) return nullptr;
     return getIsUniqueOperation(Context, Id);
+
+  case BuiltinValueKind::BindMemory:
+    if (!Types.empty()) return nullptr;
+    return getBindMemoryOperation(Context, Id);
 
   case BuiltinValueKind::Sizeof:
   case BuiltinValueKind::Strideof:
@@ -1574,10 +1614,20 @@ ValueDecl *swift::getBuiltinValueDecl(ASTContext &Context, Identifier Id) {
     if (Types.size() != 1) return nullptr;
     return getCheckedConversionOperation(Context, Id, Types[0]);
 
+  case BuiltinValueKind::UnsafeGuaranteed:
+    return getUnsafeGuaranteed(Context, Id);
+
+  case BuiltinValueKind::UnsafeGuaranteedEnd:
+    return getUnsafeGuaranteedEnd(Context, Id);
+
+  case BuiltinValueKind::OnFastPath:
+    return getOnFastPath(Context, Id);
+
   case BuiltinValueKind::IntToFPWithOverflow:
     if (Types.size() != 2) return nullptr;
     return getIntToFPWithOverflowOperation(Context, Id, Types[0], Types[1]);
   }
+
   llvm_unreachable("bad builtin value!");
 }
 

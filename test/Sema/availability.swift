@@ -19,7 +19,7 @@ func foo(x : NSUInteger) { // expected-error {{'NSUInteger' is unavailable: use 
 // Test preventing overrides of unavailable methods.
 class ClassWithUnavailable {
   @available(*, unavailable)
-  func doNotOverride() {}
+  func doNotOverride() {} // expected-note {{'doNotOverride()' has been explicitly marked unavailable here}}
 
   // FIXME: extraneous diagnostic here
   @available(*, unavailable)
@@ -43,7 +43,7 @@ func testInit() {
   ClassWithUnavailable(int: 0) // expected-error {{'init(int:)' is unavailable}} // expected-warning{{unused}}
 }
 
-func testSuvscript(cwu: ClassWithUnavailable) {
+func testSubscript(cwu: ClassWithUnavailable) {
   _ = cwu[5] // expected-error{{'subscript' is unavailable}}
 }
 
@@ -63,13 +63,30 @@ func testString() {
 }
  */
 
+// Test preventing protocol witnesses for unavailable requirements
+@objc
+protocol ProtocolWithRenamedRequirement {
+  @available(*, unavailable, renamed: "new(bar:)")
+  @objc optional func old(foo: Int) // expected-note{{'old(foo:)' has been explicitly marked unavailable here}}
+  func new(bar: Int)
+}
+
+class ClassWithGoodWitness : ProtocolWithRenamedRequirement {
+  @objc func new(bar: Int) {}
+}
+
+class ClassWithBadWitness : ProtocolWithRenamedRequirement {
+  @objc func old(foo: Int) {} // expected-error{{'old(foo:)' has been renamed to 'new(bar:)'}}
+  @objc func new(bar: Int) {}
+}
+
 @available(OSX, unavailable)
 let unavailableOnOSX: Int = 0 // expected-note{{explicitly marked unavailable here}}
 @available(iOS, unavailable)
 let unavailableOniOS: Int = 0
 @available(iOS, unavailable) @available(OSX, unavailable)
 let unavailableOnBothA: Int = 0 // expected-note{{explicitly marked unavailable here}}
-@available(OSX, unavailable)
+@available(OSX, unavailable) @available(iOS, unavailable)
 let unavailableOnBothB: Int = 0 // expected-note{{explicitly marked unavailable here}}
 
 @available(OSX, unavailable)
@@ -81,14 +98,35 @@ typealias UnavailableOnBothA = Int // expected-note{{explicitly marked unavailab
 @available(OSX, unavailable) @available(iOS, unavailable)
 typealias UnavailableOnBothB = Int // expected-note{{explicitly marked unavailable here}}
 
+@available(macOS, unavailable)
+let unavailableOnMacOS: Int = 0 // expected-note{{explicitly marked unavailable here}}
+@available(macOS, unavailable)
+typealias UnavailableOnMacOS = Int // expected-note{{explicitly marked unavailable here}}
+
+@available(OSXApplicationExtension, unavailable)
+let unavailableOnOSXAppExt: Int = 0
+@available(macOSApplicationExtension, unavailable)
+let unavailableOnMacOSAppExt: Int = 0
+
+@available(OSXApplicationExtension, unavailable)
+typealias UnavailableOnOSXAppExt = Int
+@available(macOSApplicationExtension, unavailable)
+typealias UnavailableOnMacOSAppExt = Int
+
 func testPlatforms() {
   _ = unavailableOnOSX // expected-error{{unavailable}}
   _ = unavailableOniOS
   _ = unavailableOnBothA // expected-error{{unavailable}}
   _ = unavailableOnBothB // expected-error{{unavailable}}
+  _ = unavailableOnMacOS // expected-error{{unavailable}}
+  _ = unavailableOnOSXAppExt
+  _ = unavailableOnMacOSAppExt
 
   let _: UnavailableOnOSX = 0 // expected-error{{unavailable}}
   let _: UnavailableOniOS = 0
   let _: UnavailableOnBothA = 0 // expected-error{{unavailable}}
   let _: UnavailableOnBothB = 0 // expected-error{{unavailable}}
+  let _: UnavailableOnMacOS = 0 // expected-error{{unavailable}}
+  let _: UnavailableOnOSXAppExt = 0
+  let _: UnavailableOnMacOSAppExt = 0
 }
